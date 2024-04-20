@@ -51,7 +51,7 @@ macro_rules! define_protocol {
 }
 
 #[derive(Error, Debug)]
-enum HandshakeError {
+pub enum HandshakeError {
     #[error("An error occurred at the stream level")]
     StreamError(#[from] StreamError),
     #[error("A security level error occurred")]
@@ -107,8 +107,8 @@ pub struct SecuritySetup<'a> {
 }
 
 impl SecuritySetup<'_> {
-    pub async fn initialize(mut self) -> Result<(), HandshakeError> {
-        let (mut reader, mut writer) = (self.reader, self.writer);
+    pub async fn initialize(self) -> Result<(), HandshakeError> {
+        let (reader, writer) = (self.reader, self.writer);
         let mut setup = ServerSecuritySetup::default();
         let init = setup.initialize()?;
         let init_packet = InitializeSecurityCapabilities::Initialize {

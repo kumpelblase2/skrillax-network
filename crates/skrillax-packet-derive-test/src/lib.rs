@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use bytes::{Bytes, BytesMut};
+    use bytes::Bytes;
     use skrillax_packet::{OutgoingPacket, Packet, TryIntoPacket};
     use skrillax_serde::{ByteSize, Deserialize, Serialize};
 

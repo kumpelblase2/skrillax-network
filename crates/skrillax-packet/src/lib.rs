@@ -275,7 +275,7 @@ impl FromFrames for IncomingPacket {
                     };
 
                     let decrypted = encryption
-                        .decrypt(&encrypted_data)
+                        .decrypt(encrypted_data)
                         .expect("Should be able to decrypt bytes");
 
                     let frame = SilkroadFrame::from_data(&decrypted[0..(*content_size)]);
@@ -305,7 +305,7 @@ impl FromFrames for IncomingPacket {
                 SilkroadFrame::MassiveContainer { inner, .. } => {
                     if let Some(mut massive) = massive_information.take() {
                         let mut current_buffer = massive_buffer.take().unwrap_or_default();
-                        current_buffer.extend_from_slice(&inner);
+                        current_buffer.extend_from_slice(inner);
 
                         massive.remaining = massive.remaining.saturating_sub(1);
                         if massive.remaining == 0 {
