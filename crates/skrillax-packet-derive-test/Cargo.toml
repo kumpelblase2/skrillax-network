@@ -9,5 +9,5 @@ publish = false
 [dependencies]
 skrillax-packet = { path = "../skrillax-packet", features = ["derive"] }
 skrillax-serde = { path = "../skrillax-serde", features = ["derive"] }
-bytes = "1.6"
-byteorder = "1.5"
+bytes.workspace = true
+byteorder.workspace = true

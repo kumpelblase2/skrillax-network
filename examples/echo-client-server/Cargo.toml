@@ -16,5 +16,5 @@ skrillax-packet = { path = "../../crates/skrillax-packet", features = ["derive",
 skrillax-serde = { path = "../../crates/skrillax-serde", features = ["derive"] }
 tokio = { version = "1.37.0", features = ["full"] }
 serde = { version = "1.0.198", features = ["derive"] }
-bytes = "1.6.0"
-byteorder = "1.5.0"
+bytes.workspace = true
+byteorder.workspace = true
