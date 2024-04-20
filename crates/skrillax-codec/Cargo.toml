@@ -1,0 +1,13 @@
+[package]
+name = "skrillax-codec"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bytes = "1"
+thiserror = "1"
+byteorder = "1"
+log = "0.4.21"
+tokio-util = { version = "0.7.10", features = ["codec"] }

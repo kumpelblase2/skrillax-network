@@ -1,0 +1,19 @@
+[package]
+name = "echo-client-server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "echo-client-server"
+test = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+skrillax-stream = { path = "../../crates/skrillax-stream" }
+skrillax-packet = { path = "../../crates/skrillax-packet", features = ["derive", "serde"] }
+skrillax-serde = { path = "../../crates/skrillax-serde", features = ["derive"] }
+tokio = { version = "1.37.0", features = ["full"] }
+serde = { version = "1.0.198", features = ["derive"] }
+bytes = "1.6.0"
+byteorder = "1.5.0"

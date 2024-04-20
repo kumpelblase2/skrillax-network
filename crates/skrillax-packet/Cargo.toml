@@ -1,0 +1,18 @@
+[package]
+name = "skrillax-packet"
+version = "0.1.0"
+edition = "2021"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+thiserror = "1.0"
+bytes = "1.6"
+skrillax-security = { path = "../skrillax-security" }
+byteorder = "1.5"
+skrillax-packet-derive = { path = "../skrillax-packet-derive", optional = true }
+skrillax-serde = { path = "../skrillax-serde", optional = true }
+skrillax-codec = { path = "../skrillax-codec" }
+
+[features]
+serde = ["dep:skrillax-serde"]
+derive = ["dep:skrillax-packet-derive", "serde"]
