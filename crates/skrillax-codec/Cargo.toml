@@ -3,8 +3,11 @@ name = "skrillax-codec"
 version = "0.1.0"
 edition = "2021"
 authors = ["kumpelblase2"]
-description = "A framing code for Silkroad Online network packets."
+description = "A framing codec for Silkroad Online network packets."
 license = "MIT"
+repository = "https://git.eternalwings.de/tim/skrillax-network"
+categories = ["encoding", "network-programming", "parser-implementations"]
+keywords = ["silkroad", "codec"]
 
 [features]
 default = ["codec"]
