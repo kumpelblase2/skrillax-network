@@ -14,7 +14,7 @@ test = false
 skrillax-stream = { path = "../../crates/skrillax-stream" }
 skrillax-packet = { path = "../../crates/skrillax-packet", features = ["derive", "serde"] }
 skrillax-serde = { path = "../../crates/skrillax-serde", features = ["derive"] }
-tokio = { version = "1.37.0", features = ["full"] }
+tokio = { version = "1.37.0", features = ["net", "macros", "rt-multi-thread"] }
 serde = { version = "1.0.198", features = ["derive"] }
 bytes.workspace = true
 byteorder.workspace = true
