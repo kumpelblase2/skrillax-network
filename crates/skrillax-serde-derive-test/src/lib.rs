@@ -1,6 +1,5 @@
 #![cfg(test)]
 
-use bytes::{Bytes, BytesMut};
 use skrillax_serde::{ByteSize, Deserialize, Serialize};
 
 #[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
@@ -55,7 +54,7 @@ macro_rules! test_serialize_deserialize {
     ($ty:ty, $init:expr, $size:literal) => {
         let start = $init;
         assert_eq!($size, start.byte_size());
-        let mut out_buff = BytesMut::with_capacity($size);
+        let mut out_buff = bytes::BytesMut::with_capacity($size);
         start.write_to(&mut out_buff);
         let output = out_buff.freeze();
         let result = <$ty>::try_from(output);
@@ -143,7 +142,7 @@ pub fn test_large_enum() {
 
 #[test]
 pub fn test_unknown_variant() {
-    let bytes = Bytes::from_static(&[3u8]);
+    let bytes = bytes::Bytes::from_static(&[3u8]);
     assert!(matches!(
         TestEnum::try_from(bytes),
         Err(skrillax_serde::SerializationError::UnknownVariation(

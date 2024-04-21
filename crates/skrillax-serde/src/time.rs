@@ -4,6 +4,16 @@ use chrono::{DateTime, Datelike, Duration as CDuration, TimeZone, Timelike, Utc}
 use std::ops::{Add, Deref};
 use std::time::Duration;
 
+/// A date time for Silkroad Online, which assumes the time is _after_ 2000-01-01 00:00.
+/// This time should only be used as a representation for time to be serialized/deserialized
+/// and not for actual timekeeping. Instead, use the [From]/[Deref] traits to convert to or
+/// from this type right before or after transferring it over the network. This is essentially
+/// just a newtype around the [chrono::DateTime] type.
+///
+/// Also note that there are serialization/deserialization implementations for [chrono::DateTime]
+/// as well, which behaves differently. This is another quirk of Silkroad Online; having multiple
+/// ways of representing a date time. A [SilkroadTime] takes 4 bytes, while a [DateTime] will be
+/// serialized into 16 bytes. Therefor, depending on the data type, one or the other may be chosen.
 #[derive(Copy, Clone)]
 pub struct SilkroadTime(DateTime<Utc>);
 
