@@ -1,3 +1,7 @@
+//! Time related convenience structures and serialization/deserialization implementations, as time
+//! in Silkroad Online may be a little tricky to display.
+#![cfg(feature = "chrono")]
+
 use crate::{ByteSize, Serialize};
 use bytes::{BufMut, BytesMut};
 use chrono::{DateTime, Datelike, Duration as CDuration, TimeZone, Timelike, Utc};

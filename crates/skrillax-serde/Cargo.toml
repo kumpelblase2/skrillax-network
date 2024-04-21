@@ -2,14 +2,21 @@
 name = "skrillax-serde"
 version = "0.1.0"
 edition = "2021"
+authors = ["kumpelblase2"]
+description = "A serialization/deserialization library for Silkroad Online packets."
+license = "MIT"
+repository = "https://git.eternalwings.de/tim/skrillax-network"
+categories = ["encoding", "parser-implementations"]
+keywords = ["silkroad", "serde"]
+
+[features]
+default = ["chrono"]
+derive = ["dep:skrillax-serde-derive"]
+chrono = ["dep:chrono"]
 
 [dependencies]
 bytes.workspace = true
 byteorder.workspace = true
 skrillax-serde-derive = { path = "../skrillax-serde-derive", optional = true }
-chrono = "0.4"
-paste = "1"
+chrono = { version = "0.4", optional = true }
 thiserror.workspace = true
-
-[features]
-derive = ["dep:skrillax-serde-derive"]

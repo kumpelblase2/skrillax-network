@@ -1,20 +1,27 @@
+//! `skrillax-serde` provides definitions for serialization/deserialization of data structures used
+//! in Silkroad Online.
+//!
+//! Generally, you won't be implementing the traits provided here, but will be automatically
+//! deriving these instead. We provide three traits: [Serialize], [Deserialize], and [ByteSize],
+//! for serializing, deserializing, and estimating the size respectively.
+
 pub mod error;
 mod time;
 
 use byteorder::ReadBytesExt;
 use bytes::{BufMut, BytesMut};
 pub use error::SerializationError;
+use std::io::Read;
 
 #[cfg(feature = "derive")]
 pub use skrillax_serde_derive::{ByteSize, Deserialize, Serialize};
-
-use std::io::Read;
+#[cfg(feature = "chrono")]
 pub use time::SilkroadTime;
 
 macro_rules! implement_primitive {
     ($tt:ty, $read:ident) => {
         impl Serialize for $tt {
-            fn write_to(&self, writer: &mut BytesMut) {
+            fn write_to(&self, writer: &mut ::bytes::BytesMut) {
                 writer.put_slice(&self.to_le_bytes());
             }
         }
@@ -26,10 +33,10 @@ macro_rules! implement_primitive {
         }
 
         impl Deserialize for $tt {
-            fn read_from<T: Read + ReadBytesExt>(
+            fn read_from<T: std::io::Read + ::byteorder::ReadBytesExt>(
                 reader: &mut T,
             ) -> Result<Self, SerializationError> {
-                Ok(reader.$read::<byteorder::LittleEndian>()?)
+                Ok(reader.$read::<::byteorder::LittleEndian>()?)
             }
         }
     };
