@@ -1,7 +1,17 @@
+//! `skrillax-codec` is a crate to turn a raw stream of bytes into more meaningful frames in
+//! the format used by Silkroad Online. Framing is only the first step, as a frame is still
+//! quite a general object and does itself not provide many operations. Instead, operations
+//! are contained inside frames and will need to be decoded/encoded separately.
+//!
+//! This crate provides two things: the [SilkroadFrame] and [SilkroadCodec]. The latter,
+//! [SilkroadCodec], is expected to be used in combination with tokio's
+//! [tokio_util::codec::FramedWrite] & [tokio_util::codec::FramedRead]. It uses the former,
+//! [SilkroadFrame], as the type it produces. However, it is totally possible to use this
+//! crate without using the codec by using the [SilkroadFrame]'s serialization and deserialization
+//! functions.
+
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use thiserror::Error;
-use tokio_util::codec::{Decoder, Encoder};
 
 const MASSIVE_PACKET_OPCODE: u16 = 0x600D;
 const ENCRYPTED_ALIGNMENT: usize = 8;
@@ -21,8 +31,8 @@ fn find_encrypted_length(given_length: usize) -> usize {
 }
 
 /// A 'frame' denotes the most fundamental block of data that can be sent between
-/// the client and the server. Any and all operations or data exchanges are built
-/// on top of a frame.
+/// the client and the server in Silkroad Online. Any and all operations or data exchanges
+/// are built on top of a kind of frame.
 ///
 /// There are two categories of frames; normal frames and massive frames. A normal
 /// frame is the most common frame denoting a single operation using a specified
@@ -35,8 +45,39 @@ fn find_encrypted_length(given_length: usize) -> usize {
 ///
 /// Every frame, including an encrypted frame, contains two additional bytes:
 /// a crc checksum and a cryptographically random count. The former is used
-/// to check for bitflips/modifications and the count due prevent replay
+/// to check for bitflips/modifications and the count to prevent replay
 /// attacks.
+///
+/// To read a frame from a bytestream, you can use the [SilkroadFrame::parse]
+/// function to try and parse a frame from those bytes:
+/// ```
+/// # use bytes::Bytes;
+/// # use skrillax_codec::SilkroadFrame;
+/// let (_, frame) = SilkroadFrame::parse(&[0x00, 0x00, 0x01, 0x00, 0x00, 0x00]).unwrap();
+/// assert_eq!(
+///     frame,
+///     SilkroadFrame::Packet {
+///         count: 0,
+///         crc: 0,
+///         opcode: 1,
+///         data: Bytes::new(),
+///     }
+/// );
+/// ```
+///
+/// This works vice-versa, to write a frame into a byte stream, using
+/// [SilkroadFrame::serialize]:
+/// ```
+/// # use bytes::Bytes;
+/// # use skrillax_codec::SilkroadFrame;
+/// let bytes = SilkroadFrame::Packet {
+///     count: 0,
+///     crc: 0,
+///     opcode: 1,
+///     data: Bytes::new()
+/// }.serialize();
+/// assert_eq!(bytes.as_ref(), &[0x00, 0x00, 0x01, 0x00, 0x00, 0x00]);
+/// ```
 #[derive(Eq, PartialEq, Debug)]
 pub enum SilkroadFrame {
     /// The most basic frame containing exactly one operation identified
@@ -47,7 +88,7 @@ pub enum SilkroadFrame {
         opcode: u16,
         data: Bytes,
     },
-    /// A [SilkroadFrame::Packet] which is, however, encrypted. This still
+    /// A [SilkroadFrame::Packet] which is, however, still encrypted. This
     /// contains the encrypted data and will first need to be decrypted (for
     /// example, using the `skrillax-security` crate).
     Encrypted {
@@ -56,7 +97,7 @@ pub enum SilkroadFrame {
     },
     /// The header portion of a massive packet which contains information
     /// that is necessary for the identification and usage of the followed
-    /// [SilkroadFrame::MassiveContainer] frame.
+    /// [SilkroadFrame::MassiveContainer] frame(s).
     MassiveHeader {
         count: u8,
         crc: u8,
@@ -70,25 +111,17 @@ pub enum SilkroadFrame {
     MassiveContainer { count: u8, crc: u8, inner: Bytes },
 }
 
-#[derive(Error, Debug)]
-pub enum FrameError {
-    #[error("I/O error when reading/writing from/to stream")]
-    IoError(#[from] std::io::Error),
-    #[error("The frame has not been completely transmitted yet")]
-    Incomplete,
-}
-
 impl SilkroadFrame {
     /// Tries to parse the first possible frame from the given data slice.
     /// In addition to the created frame, it will also return the size of
-    /// consumed bytes by the frame.
-    pub fn parse(data: &[u8]) -> Result<(usize, SilkroadFrame), FrameError> {
-        if data.len() < 4 {
-            return Err(FrameError::Incomplete);
+    /// consumed bytes by the frame. If not enough data is available, it
+    /// will return [Err] with the bytes required to finish the frame.
+    pub fn parse(data: &[u8]) -> Result<(usize, SilkroadFrame), usize> {
+        if data.len() < 2 {
+            return Err(2 - data.len());
         }
 
         let length = LittleEndian::read_u16(&data[0..2]);
-        let data = &data[2..];
         let encrypted = length & 0x8000 != 0;
         let content_size = (length & 0x7FFF) as usize;
         let total_size = if encrypted {
@@ -97,9 +130,11 @@ impl SilkroadFrame {
             content_size + 4
         };
 
-        if data.len() < total_size {
-            return Err(FrameError::Incomplete);
+        if data.len() < (total_size + 2) {
+            return Err((total_size + 2) - data.len());
         }
+
+        let data = &data[2..];
 
         let final_length = total_size + 2;
         let data = Bytes::copy_from_slice(&data[0..total_size]);
@@ -116,11 +151,10 @@ impl SilkroadFrame {
         Ok((final_length, Self::from_data(&data)))
     }
 
-    /// Creates a [SilkroadFrame] given the received, decrypted data. Generally,
-    /// this will result in a [SilkroadFrame::Packet], unless we encounter a packet
-    /// with the opcode `0x600D`, which is reserved for a massive packet, consisting
-    /// of a [SilkroadFrame::MassiveHeader] and multiple
-    /// [SilkroadFrame::MassiveContainer]s.
+    /// Creates a [SilkroadFrame] given the received data. Generally, this will result
+    /// in a [SilkroadFrame::Packet], unless we encounter a packet with the opcode
+    /// `0x600D`, which is reserved for a massive packet, consisting of a
+    /// [SilkroadFrame::MassiveHeader] and multiple [SilkroadFrame::MassiveContainer]s.
     ///
     /// This assumes the data is well-formed, i.e. first two bytes opcode, one byte
     /// security count, one byte crc, and the rest data. If the data represents a
@@ -133,8 +167,10 @@ impl SilkroadFrame {
         let crc = data[3];
 
         if opcode == MASSIVE_PACKET_OPCODE {
+            assert!(data.len() >= 5);
             let mode = data[4];
             if mode == 1 {
+                assert!(data.len() >= 9);
                 // 1 == Header
                 let inner_amount = LittleEndian::read_u16(&data[5..7]);
                 let inner_opcode = LittleEndian::read_u16(&data[7..9]);
@@ -210,7 +246,7 @@ impl SilkroadFrame {
     /// Tries to serialize this frame into a byte stream. It will allocate
     /// a buffer that matches the packet size into which it will serialize
     /// itself.
-    pub fn serialize(&self) -> Result<Bytes, FrameError> {
+    pub fn serialize(&self) -> Bytes {
         let mut output = BytesMut::with_capacity(self.packet_size());
 
         match &self {
@@ -257,46 +293,54 @@ impl SilkroadFrame {
             }
         }
 
-        Ok(output.freeze())
+        output.freeze()
     }
 }
 
-/// A codec to read and write [SilkroadFrame] from/onto a byte stream.
-/// This implements [Encoder] and [Decoder] to be used in combination
-/// with tokio framed read/write. Essentially, this wraps the
-/// [SilkroadFrame::serialize] and [SilkroadFrame::parse] functions
-/// to serialize & deserialize the frames.
-pub struct SilkroadCodec;
+pub use codec::*;
 
-impl Encoder<SilkroadFrame> for SilkroadCodec {
-    type Error = FrameError;
+#[cfg(feature = "codec")]
+mod codec {
+    use super::*;
+    use std::io;
+    use tokio_util::codec::{Decoder, Encoder};
 
-    fn encode(&mut self, item: SilkroadFrame, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let bytes = item.serialize()?;
-        dst.extend_from_slice(&bytes);
-        Ok(())
+    /// A codec to read and write [SilkroadFrame] from/onto a byte stream.
+    /// This implements [Encoder] and [Decoder] to be used in combination
+    /// with tokio framed read/write. Essentially, this wraps the
+    /// [SilkroadFrame::serialize] and [SilkroadFrame::parse] functions
+    /// to serialize & deserialize the frames.
+    pub struct SilkroadCodec;
+
+    impl Encoder<SilkroadFrame> for SilkroadCodec {
+        type Error = io::Error;
+
+        fn encode(&mut self, item: SilkroadFrame, dst: &mut BytesMut) -> Result<(), Self::Error> {
+            let bytes = item.serialize();
+            dst.extend_from_slice(&bytes);
+            Ok(())
+        }
     }
-}
 
-impl Decoder for SilkroadCodec {
-    type Item = SilkroadFrame;
-    type Error = FrameError;
+    impl Decoder for SilkroadCodec {
+        type Item = SilkroadFrame;
+        type Error = io::Error;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match SilkroadFrame::parse(src) {
-            Ok((bytes_read, frame)) => {
-                src.advance(bytes_read);
-                Ok(Some(frame))
+        fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+            match SilkroadFrame::parse(src) {
+                Ok((bytes_read, frame)) => {
+                    src.advance(bytes_read);
+                    Ok(Some(frame))
+                }
+                Err(_) => Ok(None),
             }
-            Err(FrameError::Incomplete) => Ok(None),
-            Err(e) => Err(e),
         }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::{FrameError, SilkroadCodec, SilkroadFrame};
+    use crate::{SilkroadCodec, SilkroadFrame};
     use bytes::{Bytes, BytesMut};
     use tokio_util::codec::Decoder;
 
@@ -321,11 +365,11 @@ mod test {
     fn test_parse_incomplete() {
         let data = [0x00, 0x00, 0x00, 0x00, 0x00];
         let res = SilkroadFrame::parse(&data);
-        assert!(matches!(res, Err(FrameError::Incomplete)));
+        assert!(matches!(res, Err(1)));
 
         let data = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00];
         let res = SilkroadFrame::parse(&data);
-        assert!(matches!(res, Err(FrameError::Incomplete)));
+        assert!(matches!(res, Err(1)));
     }
 
     #[test]
@@ -419,8 +463,7 @@ mod test {
             opcode: 0,
             data: Bytes::new(),
         }
-        .serialize()
-        .expect("Should serialize empty packet");
+        .serialize();
         assert_eq!(data.as_ref(), &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
     }
 
@@ -430,8 +473,7 @@ mod test {
             content_size: 0,
             encrypted_data: Bytes::from_static(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
         }
-        .serialize()
-        .expect("Should serialize encrypted packet");
+        .serialize();
         assert_eq!(
             data.as_ref(),
             &[0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
@@ -446,8 +488,7 @@ mod test {
             contained_opcode: 0x42,
             contained_count: 1,
         }
-        .serialize()
-        .expect("Should serialize massive header");
+        .serialize();
         assert_eq!(
             data.as_ref(),
             &[0x05, 0x00, 0x0D, 0x60, 0x00, 0x00, 0x01, 0x01, 0x00, 0x42, 0x00]
@@ -458,8 +499,7 @@ mod test {
             crc: 0,
             inner: Bytes::new(),
         }
-        .serialize()
-        .expect("Should serialize massive content");
+        .serialize();
         assert_eq!(data.as_ref(), &[0x01, 0x00, 0x0D, 0x60, 0x00, 0x00, 0x00]);
     }
 }

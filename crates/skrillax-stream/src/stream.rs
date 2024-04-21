@@ -6,6 +6,7 @@ use skrillax_packet::{
     TryFromPacket, TryIntoPacket,
 };
 use skrillax_security::EstablishedSecurity;
+use std::io;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -14,6 +15,8 @@ use tokio_util::codec::{FramedRead, FramedWrite};
 
 #[derive(Debug, Error)]
 pub enum StreamError {
+    #[error("Some IO level error occurred")]
+    IoError(#[from] io::Error),
     #[error("Error occurred at the packet level")]
     PacketError(#[from] PacketError),
     #[error("Error when trying to turn frames into packets")]
@@ -86,10 +89,7 @@ impl SilkroadStreamWrite {
     pub async fn write(&mut self, packet: OutgoingPacket) -> Result<(), StreamError> {
         let frames = packet.as_frames(self.encryption.as_ref().map(Arc::as_ref))?;
         for frame in frames {
-            self.writer
-                .send(frame)
-                .await
-                .map_err(|f| StreamError::PacketError(PacketError::FrameError(f)))?;
+            self.writer.send(frame).await?;
         }
         Ok(())
     }
@@ -133,7 +133,7 @@ impl SilkroadStreamRead {
         let mut buffer = Vec::new();
         let mut remaining = 1usize;
         while let Some(res) = self.reader.next().await {
-            let frame = res.map_err(PacketError::FrameError)?;
+            let frame = res?;
             buffer.push(frame);
             remaining -= 1;
             if remaining == 0 {

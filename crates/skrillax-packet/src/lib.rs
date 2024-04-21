@@ -1,5 +1,5 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use skrillax_codec::{FrameError, SilkroadFrame};
+use skrillax_codec::SilkroadFrame;
 use skrillax_security::EstablishedSecurity;
 use skrillax_serde::{ByteSize, Deserialize, SerializationError, Serialize};
 use std::cmp::{max, min};
@@ -10,8 +10,6 @@ pub use skrillax_packet_derive::Packet;
 
 #[derive(Error, Debug)]
 pub enum PacketError {
-    #[error("A frame level error occurred when sending a packet: {0}")]
-    FrameError(#[from] FrameError),
     #[error("The packet expected the opcode {expected} but got {received}")]
     MismatchedOpcode { expected: u16, received: u16 },
     #[error("The packet cannot be serialized")]
