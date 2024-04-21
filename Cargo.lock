@@ -632,7 +632,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "skrillax-serde-test"
+name = "skrillax-serde-derive-test"
 version = "0.1.0"
 dependencies = [
  "byteorder",

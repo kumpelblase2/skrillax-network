@@ -2,6 +2,11 @@
 name = "skrillax-serde-derive"
 version = "0.1.0"
 edition = "2021"
+authors = ["kumpelblase2"]
+description = "Derive macro to automatically implement seralization/deserialization for stuctures."
+license = "MIT"
+repository = "https://git.eternalwings.de/tim/skrillax-network"
+keywords = ["silkroad", "serde"]
 
 [dependencies]
 darling = "0.20"
@@ -13,3 +18,4 @@ syn = "2"
 [lib]
 proc-macro = true
 test = false
+doctest = false

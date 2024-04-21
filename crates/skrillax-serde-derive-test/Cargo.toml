@@ -1,5 +1,5 @@
 [package]
-name = "skrillax-serde-test"
+name = "skrillax-serde-derive-test"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -10,3 +10,6 @@ publish = false
 skrillax-serde = { path = "../skrillax-serde", features = ["derive"] }
 bytes.workspace = true
 byteorder.workspace = true
+
+[lib]
+doctest = false
