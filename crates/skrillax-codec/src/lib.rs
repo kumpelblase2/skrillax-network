@@ -298,6 +298,7 @@ impl SilkroadFrame {
     }
 }
 
+#[cfg(feature = "codec")]
 pub use codec::*;
 
 #[cfg(feature = "codec")]
