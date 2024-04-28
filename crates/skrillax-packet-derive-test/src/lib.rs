@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use skrillax_packet::{OutgoingPacket, Packet, TryIntoPacket};
+    use skrillax_packet::{OutgoingPacket, Packet, TryFromPacket, TryIntoPacket};
     use skrillax_serde::{ByteSize, Deserialize, Serialize};
 
     #[derive(Packet, ByteSize, Serialize, Deserialize)]
@@ -21,7 +21,7 @@ mod tests {
     }
 
     #[test]
-    fn test() {
+    fn test_serialize() {
         assert!(!TestPacket::MASSIVE);
         assert!(!TestPacket::ENCRYPTED);
         assert_eq!(TestPacket::ID, 0x0001);
@@ -33,5 +33,12 @@ mod tests {
             },
             TestSerializeOnly { field: 0 }.serialize()
         );
+    }
+
+    #[test]
+    fn test_deserialize() {
+        let (_, deserialized) =
+            TestDeserializeOnly::try_deserialize(0x0001, &[0x42, 0x42]).unwrap();
+        assert_eq!(deserialized.field, 0x4242);
     }
 }
