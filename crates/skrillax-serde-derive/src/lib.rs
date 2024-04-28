@@ -111,12 +111,12 @@
 //!     greeting: Option<String>
 //! }
 //! ```
-//! Alternatively, if there is an indication in the data where or not the value will be present or
+//! Alternatively, if there is an indication in the data whether the value will be present or
 //! not, you can use the `when` attribute to specify a condition. In that case the presence byte
 //! will be omitted as well, but makes it possible to be deserialized. This does not make any checks
-//! for serialization and will always append the value, ignoring the condition. The condition in
-//! `when` should denote an expression which returns a boolean, showing if the values is present in
-//! the packet or not. It is possible to access any previous values, but is currently limited to
+//! for serialization and will always append a present value, ignoring the condition. The condition
+//! in `when` should denote an expression which returns a boolean, showing if the values is present
+//! in the packet or not. It is possible to access any previous values, but is currently limited to
 //! expressions without imports.
 //! ```
 //! #[derive(Deserialize, Serialize)]
@@ -169,14 +169,14 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
 
     let output = quote! {
         impl skrillax_serde::Serialize for #ident {
-            fn write_to(&self, mut writer: &mut bytes::BytesMut) {
+            fn write_to(&self, mut writer: &mut ::skrillax_serde::__internal::bytes::BytesMut) {
                 #output
             }
         }
 
-        impl From<#ident> for bytes::Bytes {
-            fn from(packet: #ident) -> bytes::Bytes {
-                let mut buffer = bytes::BytesMut::with_capacity(packet.byte_size());
+        impl From<#ident> for ::skrillax_serde::__internal::bytes::Bytes {
+            fn from(packet: #ident) -> ::skrillax_serde::__internal::bytes::Bytes {
+                let mut buffer = ::skrillax_serde::__internal::bytes::BytesMut::with_capacity(packet.byte_size());
                 packet.write_to(&mut buffer);
                 buffer.freeze()
             }
@@ -194,16 +194,16 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     let output = deserialize(&ident, &data, args);
     let output = quote! {
         impl skrillax_serde::Deserialize for #ident {
-            fn read_from<T: std::io::Read + byteorder::ReadBytesExt>(mut reader: &mut T) -> Result<Self, skrillax_serde::SerializationError> {
+            fn read_from<T: std::io::Read + ::skrillax_serde::__internal::byteorder::ReadBytesExt>(mut reader: &mut T) -> Result<Self, skrillax_serde::SerializationError> {
                 #output
             }
         }
 
-        impl TryFrom<bytes::Bytes> for #ident {
+        impl TryFrom<::skrillax_serde::__internal::bytes::Bytes> for #ident {
             type Error = skrillax_serde::SerializationError;
 
-            fn try_from(data: bytes::Bytes) -> Result<Self, Self::Error> {
-                use bytes::Buf;
+            fn try_from(data: ::skrillax_serde::__internal::bytes::Bytes) -> Result<Self, Self::Error> {
+                use ::skrillax_serde::__internal::bytes::Buf;
                 let mut data_reader = data.reader();
                 #ident::read_from(&mut data_reader)
             }
@@ -306,7 +306,7 @@ pub(crate) fn get_type_of(ty: &Type) -> UsedType {
     }
 }
 
-fn get_variant_value<T: Spanned + ToTokens>(source: &T, value: usize, size: usize) -> syn::Expr {
+fn get_variant_value<T: Spanned + ToTokens>(source: &T, value: usize, size: usize) -> Expr {
     let ty = match size {
         1 => "u8",
         2 => "u16",

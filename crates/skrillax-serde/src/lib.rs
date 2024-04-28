@@ -18,6 +18,15 @@ pub use skrillax_serde_derive::{ByteSize, Deserialize, Serialize};
 #[cfg(feature = "chrono")]
 pub use time::SilkroadTime;
 
+// This is necessary, because otherwise we'd need to make the user of our derive traits
+// add `use` definitions for `bytes` and `byteorder`. Which would require them also to add
+// these as dependencies of their own. Yikes.
+#[doc(hidden)]
+pub mod __internal {
+    pub use byteorder;
+    pub use bytes;
+}
+
 macro_rules! implement_primitive {
     ($tt:ty, $read:ident) => {
         impl Serialize for $tt {
