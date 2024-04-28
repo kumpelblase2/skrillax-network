@@ -1,14 +1,14 @@
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use skrillax_codec::SilkroadFrame;
+use skrillax_security::handshake::CheckBytesInitialization;
 use skrillax_security::{Checksum, ChecksumBuilder, MessageCounter, SilkroadEncryption};
-use skrillax_serde::{ByteSize, Deserialize, SerializationError, Serialize};
-use std::cmp::{max, min};
 use std::sync::Mutex;
 use thiserror::Error;
 
 #[cfg(feature = "derive")]
 pub use skrillax_packet_derive::Packet;
-use skrillax_security::handshake::CheckBytesInitialization;
+#[cfg(feature = "serde")]
+use skrillax_serde::{ByteSize, Deserialize, SerializationError, Serialize};
 
 #[derive(Error, Debug)]
 pub enum PacketError {
@@ -16,6 +16,7 @@ pub enum PacketError {
     MismatchedOpcode { expected: u16, received: u16 },
     #[error("The packet cannot be serialized")]
     NonSerializable,
+    #[cfg(feature = "serde")]
     #[error("An error occurred while trying to (de)serialize the packet")]
     SerializationError(#[from] SerializationError),
     #[error("An encrypted packet was either attempted to be sent or received, but no security has been established yet")]
@@ -113,11 +114,14 @@ pub trait TryFromPacket: Sized {
     fn try_deserialize(opcode: u16, data: &[u8]) -> Result<(usize, Self), PacketError>;
 }
 
+#[cfg(feature = "serde")]
 impl<T> TryFromPacket for T
 where
     T: Packet + Deserialize,
 {
     fn try_deserialize(opcode: u16, data: &[u8]) -> Result<(usize, Self), PacketError> {
+        use bytes::Buf;
+
         if opcode != Self::ID {
             return Err(PacketError::MismatchedOpcode {
                 expected: Self::ID,
@@ -132,11 +136,14 @@ where
     }
 }
 
+#[cfg(feature = "serde")]
 impl<T> TryIntoPacket for T
 where
     T: Packet + Serialize + ByteSize,
 {
     fn serialize(&self) -> OutgoingPacket {
+        use std::cmp::{max, min};
+
         let mut buffer = BytesMut::with_capacity(self.byte_size());
         self.write_to(&mut buffer);
         if Self::MASSIVE {
