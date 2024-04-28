@@ -2,6 +2,12 @@
 name = "skrillax-security"
 version = "0.1.0"
 edition = "2021"
+authors = ["kumpelblase2"]
+description = "Security implementation for Silkroad Online packet streams."
+license = "MIT"
+repository = "https://git.eternalwings.de/tim/skrillax-network"
+categories = ["network-programming", "cryptography"]
+keywords = ["silkroad", "security", "handshake"]
 
 [dependencies]
 blowfish = { version = "0.9.1" }

@@ -2,16 +2,21 @@
 name = "skrillax-packet"
 version = "0.1.0"
 edition = "2021"
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+authors = ["kumpelblase2"]
+description = "Packet definition to serialize and deserialize to and from frames for Silkroad Online packets."
+license = "MIT"
+repository = "https://git.eternalwings.de/tim/skrillax-network"
+categories = ["network-programming", "encoding"]
+keywords = ["silkroad", "packets"]
 
 [dependencies]
 thiserror.workspace = true
 bytes.workspace = true
 byteorder.workspace = true
-skrillax-security = { path = "../skrillax-security" }
-skrillax-packet-derive = { path = "../skrillax-packet-derive", optional = true }
-skrillax-serde = { path = "../skrillax-serde", optional = true }
-skrillax-codec = { path = "../skrillax-codec" }
+skrillax-security = { path = "../skrillax-security", version = "0.1.0" }
+skrillax-packet-derive = { path = "../skrillax-packet-derive", optional = true, version = "0.1.0" }
+skrillax-serde = { path = "../skrillax-serde", optional = true, version = "0.1.1" }
+skrillax-codec = { path = "../skrillax-codec", version = "0.1.1" }
 
 [features]
 serde = ["dep:skrillax-serde"]
