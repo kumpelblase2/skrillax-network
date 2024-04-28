@@ -160,11 +160,7 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
         UsedType::Collection(inner) => {
             let inner_ty = get_type_of(inner);
             let inner = generate_reader_for_inner(ident, inner, &inner_ty);
-            let list_type = args
-                .list_type
-                .as_ref()
-                .map(|string| string.as_str())
-                .unwrap_or("length");
+            let list_type = args.list_type.as_deref().unwrap_or("length");
             match list_type {
                 "has-more" | "break" => {
                     let break_value = if list_type == "has-more" { 0u8 } else { 2u8 };

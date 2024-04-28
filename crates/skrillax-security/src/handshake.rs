@@ -31,7 +31,7 @@
 
 use crate::{blowfish_from_int, BlowfishBlock, SilkroadEncryption, SilkroadSecurityError};
 use bitflags::bitflags;
-use blowfish::cipher::{Block, BlockDecrypt, BlockEncrypt};
+use blowfish::cipher::{BlockDecrypt, BlockEncrypt};
 use blowfish::BlowfishLE;
 use byteorder::{ByteOrder, LittleEndian};
 use rand::random;

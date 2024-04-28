@@ -11,3 +11,6 @@ skrillax-packet = { path = "../skrillax-packet", features = ["derive"] }
 skrillax-serde = { path = "../skrillax-serde", features = ["derive"] }
 bytes.workspace = true
 byteorder.workspace = true
+
+[lib]
+doctest = false

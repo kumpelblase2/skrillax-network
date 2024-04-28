@@ -130,17 +130,16 @@ impl SilkroadFrame {
             content_size + 4
         };
 
-        if data.len() < (total_size + 2) {
-            return Err((total_size + 2) - data.len());
+        let data = &data[2..];
+        if data.len() < total_size {
+            return Err(total_size - data.len());
         }
 
-        let data = &data[2..];
-
-        let final_length = total_size + 2;
+        let total_consumed = total_size + 2;
         let data = Bytes::copy_from_slice(&data[0..total_size]);
         if encrypted {
             return Ok((
-                final_length,
+                total_consumed,
                 SilkroadFrame::Encrypted {
                     content_size,
                     encrypted_data: data,
@@ -148,7 +147,7 @@ impl SilkroadFrame {
             ));
         }
 
-        Ok((final_length, Self::from_data(&data)))
+        Ok((total_consumed, Self::from_data(&data)))
     }
 
     /// Creates a [SilkroadFrame] given the received data. Generally, this will result

@@ -22,15 +22,20 @@ pub enum PacketError {
     MissingSecurity,
 }
 
-/// Defines associated constants with this packet, which can be used to
-/// turn this struct into a packet. If this struct also implements
-/// [ByteSize] and [Serialize], it will automatically gain [TryIntoPacket].
-/// If it implements [Deserialize], it will automatically gain [TryFromPacket].
+/// Defines associated constants with this packet, which can be used to turn this struct into a
+/// packet.
+///
+/// If this struct also implements [ByteSize] and [Serialize], it will automatically gain
+/// [TryIntoPacket]. If it implements [Deserialize], it will automatically gain [TryFromPacket].
 /// This can automatically be derived with the `derive` feature.
 pub trait Packet: Sized {
+    /// Defines the ID or OpCode of the packet.
     const ID: u16;
+    /// Provides a more readable name for the given packet. This is usually just the struct name.
     const NAME: &'static str;
+    /// Defines if this packet is a massive packet, and should thus use massive frames for transport.
     const MASSIVE: bool;
+    /// Defines if this packet is an encrypted packet.
     const ENCRYPTED: bool;
 }
 
@@ -44,10 +49,12 @@ pub struct IncomingPacket {
 }
 
 impl IncomingPacket {
+    /// Creates a new packet given the opcode and contained data.
     pub fn new(opcode: u16, data: Bytes) -> Self {
         Self { opcode, data }
     }
 
+    /// Consumes this packet, return the contained data.
     pub fn consume(self) -> (u16, Bytes) {
         (self.opcode, self.data)
     }
@@ -61,8 +68,9 @@ impl IncomingPacket {
     }
 }
 
-/// A packet on its way out, before having been turned into a frame. In
-/// turn, we still need to know what kind of frame it should end up as.
+/// A packet on its way out, before having been turned into a frame.
+///
+/// In turn, we still need to know what kind of frame it should end up as.
 /// Generally, one outgoing packet will result in a single frame, but
 /// multiple packets can be combined to a massive packet. This will
 /// span multiple frames, including an additional header.
@@ -77,6 +85,7 @@ pub enum OutgoingPacket {
 }
 
 /// Defines _something_ that can be turned into a packet, which then can be sent out.
+///
 /// Generally, this will be either a single struct representing a single operation, or
 /// a 'protocol' enum containing a list of multiple packets. For convenience, this
 /// trait has a blanket implementation for everything which already implements
@@ -84,17 +93,20 @@ pub enum OutgoingPacket {
 ///
 /// The analog is [TryFromPacket].
 pub trait TryIntoPacket {
+    /// Serializes this structure into a packet that can be sent over the wire.
     fn serialize(&self) -> OutgoingPacket;
 }
 
 /// Defines _something_ that can be created from a packet, after it has been received.
+///
 /// Once a re-framing, decryption and other parts have completed, we want to turn the
 /// contained data into a usable structure.
 ///
 /// The analog is [TryIntoPacket].
 pub trait TryFromPacket: Sized {
-    /// Tries to create `Self` from the given opcode and the data. The opcode may not
-    /// be necessary to create `Self`, if `Self` is a single packet. `data` _may_
+    /// Tries to create `Self` from the given opcode and the data.
+    ///
+    /// The opcode may not be necessary to create `Self`, if `Self` is a single packet. `data` _may_
     /// contain more data than necessary, for example if we were inside a massive
     /// frame. Thus, we need to return the amount of consumed bytes such that the
     /// remainder may be used to create more elements of `Self` if the caller wants to.
@@ -157,8 +169,9 @@ where
 /// A procedure to turn an element into actual [skrillax_codec::SilkroadFrame]s, which can
 /// be written by the codec onto the wire.
 pub trait AsFrames {
-    /// Creates a collection of [skrillax_codec::SilkroadFrame] that represent the given
-    /// structure. This is mostly a 1-to-1 mapping between output packet
+    /// Creates a collection of [skrillax_codec::SilkroadFrame] that represent the given structure.
+    ///
+    /// This is mostly a 1-to-1 mapping between output packet
     /// kinds and their respective frames. Since frames may be encrypted,
     /// this can optionally receive the security to be used. If no
     /// security is passed, but an encrypted packet is requested, this
@@ -307,7 +320,16 @@ pub enum ReframingError {
     CounterCheckFailed { expected: u8, received: u8 },
 }
 
+/// Provides a way to turn [SilkroadFrame]s into an [IncomingPacket].
 pub trait FromFrames {
+    /// Try to turn _all_ frames into an incoming packet.
+    ///
+    /// This accepts a slice of frames, which is either a single packet frame (plain or encrypted),
+    /// or multiple frames representing a massive packet. As such, this function does not return how
+    /// many frames may have been consumed, as it is expected to have consumed all the given frames.
+    ///
+    /// It requires a security context such that it may validate and decrypt frames, when the need
+    /// arises. If no security is provided but an encrypted frame is encountered, it will error.
     fn from_frames(
         frames: &[SilkroadFrame],
         security: SecurityContext,
@@ -511,6 +533,7 @@ impl FromFrames for IncomingPacket {
     }
 }
 
+/// Container for [MessageCounter] and [Checksum].
 pub struct SecurityBytes {
     counter: Mutex<MessageCounter>,
     checksum: Checksum,
@@ -544,6 +567,8 @@ impl SecurityBytes {
     }
 }
 
+// Technically, this is not the right place. But due to the orphan rule, it's the most suitable
+// place.
 impl From<CheckBytesInitialization> for SecurityBytes {
     fn from(value: CheckBytesInitialization) -> Self {
         SecurityBytes::from_seeds(value.crc_seed, value.count_seed)
@@ -575,10 +600,12 @@ impl<'a> SecurityContext<'a> {
         }
     }
 
+    /// Provide the established encryption, if present.
     pub fn encryption(&self) -> Option<&SilkroadEncryption> {
         self.encryption
     }
 
+    /// Provide the security bytes/checkers, if present.
     pub fn checkers(&self) -> Option<&SecurityBytes> {
         self.checkers
     }
