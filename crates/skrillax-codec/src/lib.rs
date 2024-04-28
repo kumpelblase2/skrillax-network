@@ -170,7 +170,7 @@ impl SilkroadFrame {
             assert!(data.len() >= 5);
             let mode = data[4];
             if mode == 1 {
-                assert!(data.len() >= 9);
+                assert!(data.len() >= 10);
                 // 1 == Header
                 let inner_amount = LittleEndian::read_u16(&data[5..7]);
                 let inner_opcode = LittleEndian::read_u16(&data[7..9]);
@@ -209,8 +209,8 @@ impl SilkroadFrame {
             SilkroadFrame::Encrypted { content_size, .. } => *content_size,
             SilkroadFrame::MassiveHeader { .. } => {
                 // Massive headers have a fixed length because they're always:
-                // 1 Byte 'is header', 2 Bytes 'amount of packets', 2 Bytes 'opcode'
-                5
+                // 1 Byte 'is header', 2 Bytes 'amount of packets', 2 Bytes 'opcode', 1 Byte unknown
+                6
             }
             SilkroadFrame::MassiveContainer { inner, .. } => {
                 // 1 at the start to denote that this is container packet
@@ -282,6 +282,7 @@ impl SilkroadFrame {
                 output.put_u8(1);
                 output.put_u16_le(*contained_count);
                 output.put_u16_le(*contained_opcode);
+                output.put_u8(0);
             }
             SilkroadFrame::MassiveContainer { count, crc, inner } => {
                 output.put_u16_le(self.content_size() as u16);
@@ -407,10 +408,10 @@ mod test {
     #[test]
     fn test_parse_massive() {
         let header = [
-            0x05, 0x00, 0x0D, 0x60, 0x00, 0x00, 0x01, 0x01, 0x00, 0x42, 0x00,
+            0x06, 0x00, 0x0D, 0x60, 0x00, 0x00, 0x01, 0x01, 0x00, 0x42, 0x00, 0x00,
         ];
         let (consumed, packet) = SilkroadFrame::parse(&header).expect("Should parse valid data");
-        assert_eq!(11, consumed);
+        assert_eq!(12, consumed);
         assert_eq!(
             SilkroadFrame::MassiveHeader {
                 count: 0,
@@ -491,7 +492,7 @@ mod test {
         .serialize();
         assert_eq!(
             data.as_ref(),
-            &[0x05, 0x00, 0x0D, 0x60, 0x00, 0x00, 0x01, 0x01, 0x00, 0x42, 0x00]
+            &[0x06, 0x00, 0x0D, 0x60, 0x00, 0x00, 0x01, 0x01, 0x00, 0x42, 0x00, 0x00]
         );
 
         let data = SilkroadFrame::MassiveContainer {
