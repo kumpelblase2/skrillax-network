@@ -1,16 +1,18 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use skrillax_codec::SilkroadFrame;
-use skrillax_security::EstablishedSecurity;
+use skrillax_security::{Checksum, ChecksumBuilder, MessageCounter, SilkroadEncryption};
 use skrillax_serde::{ByteSize, Deserialize, SerializationError, Serialize};
 use std::cmp::{max, min};
+use std::sync::Mutex;
 use thiserror::Error;
 
 #[cfg(feature = "derive")]
 pub use skrillax_packet_derive::Packet;
+use skrillax_security::handshake::CheckBytesInitialization;
 
 #[derive(Error, Debug)]
 pub enum PacketError {
-    #[error("The packet expected the opcode {expected} but got {received}")]
+    #[error("The packet expected the opcode {expected:#06x} but got {received:#06x}")]
     MismatchedOpcode { expected: u16, received: u16 },
     #[error("The packet cannot be serialized")]
     NonSerializable,
@@ -152,65 +154,131 @@ where
     }
 }
 
-/// A procedure to turn an element into actual [SilkroadFrame]s, which can
+/// A procedure to turn an element into actual [skrillax_codec::SilkroadFrame]s, which can
 /// be written by the codec onto the wire.
 pub trait AsFrames {
-    /// Creates a collection of [SilkroadFrame] that represent the given
+    /// Creates a collection of [skrillax_codec::SilkroadFrame] that represent the given
     /// structure. This is mostly a 1-to-1 mapping between output packet
     /// kinds and their respective frames. Since frames may be encrypted,
     /// this can optionally receive the security to be used. If no
     /// security is passed, but an encrypted packet is requested, this
     /// may error.
-    fn as_frames(
-        &self,
-        security: Option<&EstablishedSecurity>,
-    ) -> Result<Vec<SilkroadFrame>, PacketError>;
+    fn as_frames(&self, context: SecurityContext) -> Result<Vec<SilkroadFrame>, PacketError>;
 }
 
 impl AsFrames for OutgoingPacket {
-    fn as_frames(
-        &self,
-        security: Option<&EstablishedSecurity>,
-    ) -> Result<Vec<SilkroadFrame>, PacketError> {
+    fn as_frames(&self, context: SecurityContext) -> Result<Vec<SilkroadFrame>, PacketError> {
+        let count = context
+            .checkers()
+            .map(|check| check.generate_count_byte())
+            .unwrap_or(0);
+
         match self {
             OutgoingPacket::Encrypted { opcode, data } => {
-                let Some(security) = security else {
+                let Some(encryption) = context.encryption() else {
                     return Err(PacketError::MissingSecurity);
                 };
-                let mut new_buffer = BytesMut::with_capacity(data.len() + 4);
-                new_buffer.put_u16(*opcode);
+                let content_length = data.len() + 4;
+                let length_with_padding = SilkroadEncryption::find_encrypted_length(content_length);
+                let mut new_buffer = BytesMut::with_capacity(length_with_padding);
+                new_buffer.put_u16_le(*opcode);
+                new_buffer.put_u8(count);
                 new_buffer.put_u8(0);
-                new_buffer.put_u8(0);
-                new_buffer.copy_from_slice(data);
+                new_buffer.put_slice(data);
 
-                let encrypted_data = security
-                    .encrypt(&new_buffer.freeze())
+                if let Some(mut checksum_builder) = context
+                    .checkers()
+                    .map(|checkers| checkers.checksum_builder())
+                {
+                    checksum_builder.update(&(data.len() as u16 | 0x8000).to_le_bytes());
+                    checksum_builder.update(&new_buffer);
+                    new_buffer[3] = checksum_builder.digest();
+                }
+
+                for _ in 0..(length_with_padding - content_length) {
+                    new_buffer.put_u8(0);
+                }
+
+                encryption
+                    .encrypt_mut(&mut new_buffer)
                     .expect("Should be able to encrypt");
                 Ok(vec![SilkroadFrame::Encrypted {
                     content_size: data.len(),
-                    encrypted_data,
+                    encrypted_data: new_buffer.freeze(),
                 }])
             }
-            OutgoingPacket::Simple { opcode, data } => Ok(vec![SilkroadFrame::Packet {
-                count: 0,
-                crc: 0,
-                opcode: *opcode,
-                data: data.clone(),
-            }]),
+            OutgoingPacket::Simple { opcode, data } => {
+                let crc = if let Some(mut checksum_builder) = context
+                    .checkers()
+                    .map(|checkers| checkers.checksum_builder())
+                {
+                    checksum_builder.update(&(data.len() as u16).to_le_bytes());
+                    checksum_builder.update(&opcode.to_le_bytes());
+                    checksum_builder.update_byte(count);
+                    checksum_builder.update_byte(0);
+                    checksum_builder.update(data);
+                    checksum_builder.digest()
+                } else {
+                    0
+                };
+
+                Ok(vec![SilkroadFrame::Packet {
+                    count,
+                    crc,
+                    opcode: *opcode,
+                    data: data.clone(),
+                }])
+            }
             OutgoingPacket::Massive { opcode, packets } => {
                 let mut frames = Vec::with_capacity(1 + packets.len());
 
+                let crc = if let Some(mut checksum_builder) = context
+                    .checkers()
+                    .map(|checkers| checkers.checksum_builder())
+                {
+                    checksum_builder.update(&5u16.to_le_bytes());
+                    checksum_builder.update(&0x600Du16.to_le_bytes());
+                    checksum_builder.update_byte(count);
+                    checksum_builder.update_byte(0);
+                    checksum_builder.update_byte(1);
+                    checksum_builder.update(&opcode.to_le_bytes());
+                    checksum_builder.update(&(packets.len() as u16).to_le_bytes());
+                    checksum_builder.digest()
+                } else {
+                    0
+                };
+
                 frames.push(SilkroadFrame::MassiveHeader {
-                    count: 0,
-                    crc: 0,
+                    count,
+                    crc,
                     contained_opcode: *opcode,
                     contained_count: packets.len() as u16,
                 });
 
                 for packet in packets.iter() {
+                    let count = context
+                        .checkers()
+                        .map(|check| check.generate_count_byte())
+                        .unwrap_or(0);
+
+                    let crc = if let Some(mut checksum_builder) = context
+                        .checkers()
+                        .map(|checkers| checkers.checksum_builder())
+                    {
+                        checksum_builder.update(&((packet.len() + 1) as u16).to_le_bytes());
+                        checksum_builder.update(&0x600Du16.to_le_bytes());
+                        checksum_builder.update_byte(count);
+                        checksum_builder.update_byte(0);
+                        checksum_builder.update_byte(0);
+                        checksum_builder.update(packet);
+                        checksum_builder.digest()
+                    } else {
+                        0
+                    };
+
                     frames.push(SilkroadFrame::MassiveContainer {
-                        count: 0,
-                        crc: 0,
+                        count,
+                        crc,
                         inner: packet.clone(),
                     });
                 }
@@ -233,12 +301,16 @@ pub enum ReframingError {
     MissingSecurity,
     #[error("The decryption of an encrypted packet did not yield a simple frame")]
     InvalidEncryptedData,
+    #[error("The CRC byte was {received} by we expected to to be {expected}")]
+    CrcCheckFailed { expected: u8, received: u8 },
+    #[error("The count byte was {received} by we expected to to be {expected}")]
+    CounterCheckFailed { expected: u8, received: u8 },
 }
 
 pub trait FromFrames {
     fn from_frames(
         frames: &[SilkroadFrame],
-        security: Option<&EstablishedSecurity>,
+        security: SecurityContext,
     ) -> Result<IncomingPacket, ReframingError>;
 }
 
@@ -250,7 +322,7 @@ struct MassiveInfo {
 impl FromFrames for IncomingPacket {
     fn from_frames(
         frames: &[SilkroadFrame],
-        security: Option<&EstablishedSecurity>,
+        security: SecurityContext,
     ) -> Result<IncomingPacket, ReframingError> {
         let mut massive_information: Option<MassiveInfo> = None;
         let mut massive_buffer: Option<BytesMut> = None;
@@ -261,14 +333,43 @@ impl FromFrames for IncomingPacket {
                 {
                     return Err(ReframingError::MixedFrames);
                 }
-                SilkroadFrame::Packet { opcode, data, .. } => {
-                    return Ok(IncomingPacket::new(*opcode, data.clone()))
+                SilkroadFrame::Packet {
+                    opcode,
+                    data,
+                    count,
+                    crc,
+                } => {
+                    if let Some(checkers) = security.checkers() {
+                        let expected_count = checkers.generate_count_byte();
+                        if *count != expected_count {
+                            return Err(ReframingError::CounterCheckFailed {
+                                expected: expected_count,
+                                received: *count,
+                            });
+                        }
+
+                        let mut checksum_builder = checkers.checksum_builder();
+                        checksum_builder.update(&(data.len() as u16).to_le_bytes());
+                        checksum_builder.update(&opcode.to_le_bytes());
+                        checksum_builder.update_byte(*count);
+                        checksum_builder.update_byte(0);
+                        checksum_builder.update(data);
+                        let expected_crc = checksum_builder.digest();
+                        if *crc != expected_crc {
+                            return Err(ReframingError::CrcCheckFailed {
+                                expected: expected_crc,
+                                received: *crc,
+                            });
+                        }
+                    }
+
+                    return Ok(IncomingPacket::new(*opcode, data.clone()));
                 }
                 SilkroadFrame::Encrypted {
                     encrypted_data,
                     content_size,
                 } => {
-                    let Some(encryption) = &security else {
+                    let Some(encryption) = security.encryption() else {
                         return Err(ReframingError::MissingSecurity);
                     };
 
@@ -276,9 +377,38 @@ impl FromFrames for IncomingPacket {
                         .decrypt(encrypted_data)
                         .expect("Should be able to decrypt bytes");
 
-                    let frame = SilkroadFrame::from_data(&decrypted[0..(*content_size)]);
+                    let frame = SilkroadFrame::from_data(&decrypted[0..(*content_size + 4)]);
                     return match frame {
-                        SilkroadFrame::Packet { opcode, data, .. } => {
+                        SilkroadFrame::Packet {
+                            opcode,
+                            data,
+                            count,
+                            crc,
+                        } => {
+                            if let Some(checkers) = security.checkers() {
+                                let expected_count = checkers.generate_count_byte();
+                                if count != expected_count {
+                                    return Err(ReframingError::CounterCheckFailed {
+                                        expected: expected_count,
+                                        received: count,
+                                    });
+                                }
+
+                                let mut checksum_builder = checkers.checksum_builder();
+                                checksum_builder
+                                    .update(&(data.len() as u16 | 0x8000).to_le_bytes());
+                                checksum_builder.update(&opcode.to_le_bytes());
+                                checksum_builder.update_byte(count);
+                                checksum_builder.update_byte(0);
+                                checksum_builder.update(&data);
+                                let expected_crc = checksum_builder.digest();
+                                if crc != expected_crc {
+                                    return Err(ReframingError::CrcCheckFailed {
+                                        expected: expected_crc,
+                                        received: crc,
+                                    });
+                                }
+                            }
                             Ok(IncomingPacket::new(opcode, data))
                         }
                         _ => Err(ReframingError::InvalidEncryptedData),
@@ -287,7 +417,8 @@ impl FromFrames for IncomingPacket {
                 SilkroadFrame::MassiveHeader {
                     contained_count,
                     contained_opcode,
-                    ..
+                    count,
+                    crc,
                 } => {
                     let required_frames = *contained_count as usize;
                     let remaining_frames = frames.len() - (i + 1);
@@ -295,17 +426,69 @@ impl FromFrames for IncomingPacket {
                         return Err(ReframingError::Incomplete(Some(required_frames)));
                     }
 
+                    if let Some(checkers) = security.checkers() {
+                        let expected_count = checkers.generate_count_byte();
+                        if *count != expected_count {
+                            return Err(ReframingError::CounterCheckFailed {
+                                expected: expected_count,
+                                received: *count,
+                            });
+                        }
+
+                        let mut checksum_builder = checkers.checksum_builder();
+                        checksum_builder.update(&5u16.to_le_bytes());
+                        checksum_builder.update(&0x600Du16.to_le_bytes());
+                        checksum_builder.update_byte(*count);
+                        checksum_builder.update_byte(0);
+                        checksum_builder.update_byte(1);
+                        checksum_builder.update(&contained_opcode.to_le_bytes());
+                        checksum_builder.update(&contained_count.to_le_bytes());
+                        let expected_crc = checksum_builder.digest();
+                        if *crc != expected_crc {
+                            return Err(ReframingError::CrcCheckFailed {
+                                expected: expected_crc,
+                                received: *crc,
+                            });
+                        }
+                    }
+
                     massive_information = Some(MassiveInfo {
                         opcode: *contained_opcode,
                         remaining: *contained_count,
                     });
                 }
-                SilkroadFrame::MassiveContainer { inner, .. } => {
+                SilkroadFrame::MassiveContainer { inner, count, crc } => {
                     if let Some(mut massive) = massive_information.take() {
                         let mut current_buffer = massive_buffer.take().unwrap_or_default();
                         current_buffer.extend_from_slice(inner);
 
                         massive.remaining = massive.remaining.saturating_sub(1);
+
+                        if let Some(checkers) = security.checkers() {
+                            let expected_count = checkers.generate_count_byte();
+                            if *count != expected_count {
+                                return Err(ReframingError::CounterCheckFailed {
+                                    expected: expected_count,
+                                    received: *count,
+                                });
+                            }
+
+                            let mut checksum_builder = checkers.checksum_builder();
+                            checksum_builder.update(&(1u16 + inner.len() as u16).to_le_bytes());
+                            checksum_builder.update(&0x600Du16.to_le_bytes());
+                            checksum_builder.update_byte(*count);
+                            checksum_builder.update_byte(0);
+                            checksum_builder.update_byte(1);
+                            checksum_builder.update(inner);
+                            let expected_crc = checksum_builder.digest();
+                            if *crc != expected_crc {
+                                return Err(ReframingError::CrcCheckFailed {
+                                    expected: expected_crc,
+                                    received: *crc,
+                                });
+                            }
+                        }
+
                         if massive.remaining == 0 {
                             return Ok(IncomingPacket::new(
                                 massive.opcode,
@@ -325,5 +508,78 @@ impl FromFrames for IncomingPacket {
         Err(ReframingError::Incomplete(
             massive_information.map(|massive| massive.remaining as usize),
         ))
+    }
+}
+
+pub struct SecurityBytes {
+    counter: Mutex<MessageCounter>,
+    checksum: Checksum,
+}
+
+impl SecurityBytes {
+    pub fn from_seeds(crc_seed: u32, count_seed: u32) -> Self {
+        Self {
+            counter: Mutex::new(MessageCounter::new(count_seed)),
+            checksum: Checksum::new(crc_seed),
+        }
+    }
+
+    /// Generate the next count byte.
+    ///
+    /// A count byte is used to avoid replay attacks, used to determine a continuous flow of the data. If a packet is
+    /// dropped, or another injected, this will no longer match. It is essentially a seeded RNG number.
+    pub fn generate_count_byte(&self) -> u8 {
+        self.counter
+            .lock()
+            .expect("Should be able to lock the counter for increasing it")
+            .next_byte()
+    }
+
+    pub fn generate_checksum(&self, data: &[u8]) -> u8 {
+        self.checksum.generate_byte(data)
+    }
+
+    pub fn checksum_builder(&self) -> ChecksumBuilder {
+        self.checksum.builder()
+    }
+}
+
+impl From<CheckBytesInitialization> for SecurityBytes {
+    fn from(value: CheckBytesInitialization) -> Self {
+        SecurityBytes::from_seeds(value.crc_seed, value.count_seed)
+    }
+}
+
+/// Provides a complete security context to handle packets.
+///
+/// To properly handle all security features of a Silkroad Online packet, you may need all three
+/// elements: [SilkroadEncryption], [MessageCounter], and [Checksum]. However, it is possible for
+/// either the [SilkroadEncryption] to be absent and/or both [MessageCounter] and [Checksum] to be
+/// absent. Thus, [MessageCounter] and [Checksum] are tied together. This struct does not really
+/// provide much in and of itself, but it is handy as it might be used in different layers in the
+/// stack to refer to.
+#[derive(Default)]
+pub struct SecurityContext<'a> {
+    encryption: Option<&'a SilkroadEncryption>,
+    checkers: Option<&'a SecurityBytes>,
+}
+
+impl<'a> SecurityContext<'a> {
+    pub fn new(
+        encryption: Option<&'a SilkroadEncryption>,
+        security_bytes: Option<&'a SecurityBytes>,
+    ) -> Self {
+        Self {
+            encryption,
+            checkers: security_bytes,
+        }
+    }
+
+    pub fn encryption(&self) -> Option<&SilkroadEncryption> {
+        self.encryption
+    }
+
+    pub fn checkers(&self) -> Option<&SecurityBytes> {
+        self.checkers
     }
 }

@@ -3,9 +3,9 @@ use futures::{SinkExt, StreamExt};
 use skrillax_codec::SilkroadCodec;
 use skrillax_packet::{
     AsFrames, FromFrames, IncomingPacket, OutgoingPacket, PacketError, ReframingError,
-    TryFromPacket, TryIntoPacket,
+    SecurityBytes, SecurityContext, TryFromPacket, TryIntoPacket,
 };
-use skrillax_security::EstablishedSecurity;
+use skrillax_security::SilkroadEncryption;
 use std::io;
 use std::sync::Arc;
 use thiserror::Error;
@@ -60,8 +60,9 @@ impl SilkroadTcpExt for TcpStream {
 }
 
 pub struct SilkroadStreamWrite {
-    pub(crate) writer: FramedWrite<OwnedWriteHalf, SilkroadCodec>,
-    pub(crate) encryption: Option<Arc<EstablishedSecurity>>,
+    writer: FramedWrite<OwnedWriteHalf, SilkroadCodec>,
+    encryption: Option<Arc<SilkroadEncryption>>,
+    security_bytes: Option<Arc<SecurityBytes>>,
 }
 
 impl SilkroadStreamWrite {
@@ -69,25 +70,45 @@ impl SilkroadStreamWrite {
         Self {
             writer,
             encryption: None,
+            security_bytes: None,
         }
     }
 
+    #[allow(unused)]
     fn with_encryption(
         writer: FramedWrite<OwnedWriteHalf, SilkroadCodec>,
-        encryption: Arc<EstablishedSecurity>,
+        encryption: Arc<SilkroadEncryption>,
+        security_bytes: Arc<SecurityBytes>,
     ) -> Self {
         Self {
             writer,
             encryption: Some(encryption),
+            security_bytes: Some(security_bytes),
         }
     }
 
-    pub fn enable_encryption(&mut self, encryption: Arc<EstablishedSecurity>) {
+    pub fn enable_encryption(&mut self, encryption: Arc<SilkroadEncryption>) {
         self.encryption = Some(encryption);
     }
 
+    pub fn enable_security_checks(&mut self, security_bytes: Arc<SecurityBytes>) {
+        self.security_bytes = Some(security_bytes);
+    }
+
+    pub fn encryption(&self) -> Option<&SilkroadEncryption> {
+        self.encryption.as_deref()
+    }
+
+    pub fn security_bytes(&self) -> Option<&SecurityBytes> {
+        self.security_bytes.as_deref()
+    }
+
+    pub fn security_context(&self) -> SecurityContext {
+        SecurityContext::new(self.encryption(), self.security_bytes())
+    }
+
     pub async fn write(&mut self, packet: OutgoingPacket) -> Result<(), StreamError> {
-        let frames = packet.as_frames(self.encryption.as_ref().map(Arc::as_ref))?;
+        let frames = packet.as_frames(self.security_context())?;
         for frame in frames {
             self.writer.send(frame).await?;
         }
@@ -101,7 +122,8 @@ impl SilkroadStreamWrite {
 
 pub struct SilkroadStreamRead {
     reader: FramedRead<OwnedReadHalf, SilkroadCodec>,
-    encryption: Option<Arc<EstablishedSecurity>>,
+    encryption: Option<Arc<SilkroadEncryption>>,
+    security_bytes: Option<Arc<SecurityBytes>>,
     unconsumed: Option<(u16, Bytes)>,
 }
 
@@ -110,23 +132,43 @@ impl SilkroadStreamRead {
         Self {
             reader,
             encryption: None,
+            security_bytes: None,
             unconsumed: None,
         }
     }
 
+    #[allow(unused)]
     fn with_encryption(
         reader: FramedRead<OwnedReadHalf, SilkroadCodec>,
-        encryption: Arc<EstablishedSecurity>,
+        encryption: Arc<SilkroadEncryption>,
+        security_bytes: Arc<SecurityBytes>,
     ) -> Self {
         Self {
             reader,
             encryption: Some(encryption),
+            security_bytes: Some(security_bytes),
             unconsumed: None,
         }
     }
 
-    pub fn enable_encryption(&mut self, encryption: Arc<EstablishedSecurity>) {
+    pub fn enable_encryption(&mut self, encryption: Arc<SilkroadEncryption>) {
         self.encryption = Some(encryption);
+    }
+
+    pub fn enable_security_checks(&mut self, security_bytes: Arc<SecurityBytes>) {
+        self.security_bytes = Some(security_bytes);
+    }
+
+    pub fn encryption(&self) -> Option<&SilkroadEncryption> {
+        self.encryption.as_deref()
+    }
+
+    pub fn security_bytes(&self) -> Option<&SecurityBytes> {
+        self.security_bytes.as_deref()
+    }
+
+    pub fn security_context(&self) -> SecurityContext {
+        SecurityContext::new(self.encryption(), self.security_bytes())
     }
 
     pub async fn next(&mut self) -> Result<IncomingPacket, StreamError> {
@@ -137,10 +179,7 @@ impl SilkroadStreamRead {
             buffer.push(frame);
             remaining -= 1;
             if remaining == 0 {
-                match IncomingPacket::from_frames(
-                    &buffer,
-                    self.encryption.as_ref().map(Arc::as_ref),
-                ) {
+                match IncomingPacket::from_frames(&buffer, self.security_context()) {
                     Ok(packet) => return Ok(packet),
                     Err(ReframingError::Incomplete(required)) => {
                         remaining += required.unwrap_or(1);

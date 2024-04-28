@@ -14,7 +14,11 @@ tokio-util = { version = "0.7", features = ["codec"] }
 log = "0.4"
 tokio = { version = "1.37", features = ["net"] }
 crossbeam-channel = "0.5"
-skrillax-serde = { path = "../skrillax-serde" }
-skrillax-packet = { path = "../skrillax-packet" }
+skrillax-serde = { path = "../skrillax-serde", features = ["derive"] }
+skrillax-packet = { path = "../skrillax-packet", features = ["serde", "derive"] }
 skrillax-codec = { path = "../skrillax-codec" }
 futures = "0.3"
+bitflags = "2.5"
+
+[dev-dependencies]
+tokio = { version = "1.37", features = ["rt", "net", "macros"] }
