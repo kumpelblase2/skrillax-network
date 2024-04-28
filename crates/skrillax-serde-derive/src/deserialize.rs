@@ -160,14 +160,39 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
         UsedType::Collection(inner) => {
             let inner_ty = get_type_of(inner);
             let inner = generate_reader_for_inner(ident, inner, &inner_ty);
-            quote_spanned! { field.span() =>
-                let size = u8::read_from(reader)?;
-                let mut items = Vec::with_capacity(size.into());
-                for _ in 0..size {
-                    #inner
-                    items.push(#ident);
+            let list_type = args
+                .list_type
+                .as_ref()
+                .map(|string| string.as_str())
+                .unwrap_or("length");
+            match list_type {
+                "has-more" | "break" => {
+                    let break_value = if list_type == "has-more" { 0u8 } else { 2u8 };
+                    quote_spanned! { field.span() =>
+                        let mut items = Vec::new();
+                        loop {
+                            let more = u8::read_from(reader)?;
+                            if more == #break_value {
+                                break;
+                            }
+
+                            #inner
+                            items.push(#ident);
+                        }
+                        let #ident = items;
+                    }
                 }
-                let #ident = items;
+                _ => {
+                    quote_spanned! { field.span() =>
+                        let size = u8::read_from(reader)?;
+                        let mut items = Vec::with_capacity(size.into());
+                        for _ in 0..size {
+                            #inner
+                            items.push(#ident);
+                        }
+                        let #ident = items;
+                    }
+                }
             }
         }
         UsedType::Option(inner) => {
