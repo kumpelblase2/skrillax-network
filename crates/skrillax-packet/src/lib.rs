@@ -1,3 +1,51 @@
+//! This crate mainly provides one trait: [Packet]. While you can implement it yourself,
+//! you might as well use the derive macro to derive it instead (which requires the `derive` feature).
+//! ```
+//! # #[cfg(feature = "derive")]
+//! # {
+//! # use skrillax_packet_derive::Packet;
+//! #[derive(Packet)]
+//! #[packet(opcode = 0x5001)]
+//! struct MyPacket {
+//!     content: String
+//! }
+//! # }
+//! ```
+//!
+//! The rest of this crate focuses around converting a [Packet] into a [SilkroadFrame], or vice-versa.
+//! This currently takes a small detour through using either an [IncomingPacket] or [OutgoingPacket],
+//! depending on the direction. This is done because we often first need to apply some kind of
+//! transformation to the frames, before we can easily turn them into structs representing the
+//! packet. This would include combining multiple massive frames into one large buffer as well as
+//! decrypting the content of frames to figure out their opcodes. Thus, the chain goes something
+//! like this, in a simplified way.
+//! To turn a packet into frames: `myPacket.serialize().as_frames(context)`
+//! To turn frames into a packet: `IncomingPacket::from_frames(frames, context).try_into_packet::<MyPacket>()`
+//!
+//! However, this does require a bit more than just the [Packet] implementation. Either you need to
+//! implement the [TryFromPacket] and [TryIntoPacket] traits yourself, or you need to implement/derive
+//! [Serialize], [Deserialize], and [ByteSize] from the [skrillax_serde] crate. With these, [TryIntoPacket]
+//! and [TryFromPacket] are automatically implemented for you. They are necessary to
+//! serialize/deserialize the packet content into bytes, which can be sent using the frames.
+//!
+//! ## Derive
+//!
+//! The derive macro currently has three options, for all the options the trait provides:
+//! ```
+//! # #[cfg(feature = "derive")]
+//! # {
+//! # use skrillax_packet_derive::Packet;
+//! #[derive(Packet)]
+//! #[packet(opcode = 0x5001, encrypted = true, massive = false)]
+//! struct MyPacket {
+//!     content: String
+//! }
+//! # }
+//! ```
+//! `encrypted` and `massive` are `false` by default and are mutually exclusive. `opcode` is a
+//! required attribute, this is also considered the `ID` of a packet. The name is automatically
+//! considered to be the structure's name.
+
 use bytes::{BufMut, Bytes, BytesMut};
 use skrillax_codec::SilkroadFrame;
 use skrillax_security::handshake::CheckBytesInitialization;
