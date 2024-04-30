@@ -67,6 +67,12 @@ impl IncomingPacket {
     pub fn data(&self) -> &[u8] {
         &self.data
     }
+
+    pub fn try_into_packet<T: TryFromPacket>(self) -> Result<T, PacketError> {
+        let (opcode, data) = self.consume();
+        let (_, packet) = T::try_deserialize(opcode, &data)?;
+        Ok(packet)
+    }
 }
 
 /// A packet on its way out, before having been turned into a frame.
@@ -148,11 +154,11 @@ where
         self.write_to(&mut buffer);
         if Self::MASSIVE {
             let mut data = buffer.freeze();
-            let required_packets = max(data.len() / 0xFFFF, 1);
+            let required_packets = max(data.len() / 0x7FFF, 1);
 
             let mut result = Vec::with_capacity(required_packets);
             for _ in 0..required_packets {
-                result.push(data.split_to(min(0xFFFF, data.len())));
+                result.push(data.split_to(min(0x7FFF, data.len())));
             }
 
             OutgoingPacket::Massive {
