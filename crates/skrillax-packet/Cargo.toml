@@ -1,6 +1,6 @@
 [package]
 name = "skrillax-packet"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["kumpelblase2"]
 description = "Packet definition to serialize and deserialize to and from frames for Silkroad Online packets."
