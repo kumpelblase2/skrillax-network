@@ -1,6 +1,46 @@
-use crate::stream::{SilkroadStreamRead, SilkroadStreamWrite, StreamError};
+//! The handshake module provides procedures to asynchronously handle the handshake.
+//!
+//! In most cases, the first thing that happens in a connection between a Silkroad
+//! server and client is the security handshake. This should always happend, but
+//! doesn't necessarily have to establish encryption. The handshake is split into
+//! the active part and the passive part. In normal operation, the server takes on
+//! the active role, while the client takes on the passive role. Active in this case
+//! means it will actively initiate the handshake, while the passive party will wait
+//! for the handshake to be initiated. Therefor, a server would use the
+//! [ActiveSecuritySetup], while a client would turn to the [PassiveSecuritySetup].
+//! Both operate on a Silkroad Stream, i.e. a [crate::stream::SilkroadStreamRead]
+//! and [crate::stream::SilkroadStreamWrite].
+//!
+//! Both sides provide a `handle` method which will complete the handshake from
+//! its perspective:
+//!
+//! ```no_run
+//! # async fn test() {
+//! # use tokio::net::TcpSocket;
+//! # use skrillax_stream::stream::SilkroadTcpExt;
+//! # use skrillax_stream::handshake::ActiveSecuritySetup;
+//! # use skrillax_stream::handshake::PassiveSecuritySetup;
+//! # let listen_addr = "127.0.0.1:1337".parse().unwrap();
+//! # let socket = TcpSocket::new_v4().unwrap().connect(listen_addr).await.unwrap();
+//! let (mut reader, mut writer) = socket.into_silkroad_stream();
+//! ActiveSecuritySetup::handle(&mut reader, &mut writer).await.expect("Active setup should complete.");
+//! // OR
+//! PassiveSecuritySetup::handle(&mut reader, &mut writer).await.expect("Passive setup should complete.");
+//! # }
+//! ```
+//!
+//! After the handshake is finished, we can continue using the reader and writer to
+//! send packets. If we used the default or specifically configured encryption as a
+//! security feature, we can also now send and receive encrypted packets.
+
+use crate::stream::{
+    InStreamError, InputProtocol, OutStreamError, OutputProtocol, SilkroadStreamRead,
+    SilkroadStreamWrite,
+};
 use bitflags::bitflags;
-use skrillax_packet::{OutgoingPacket, Packet, SecurityBytes};
+use skrillax_packet::{
+    OutgoingPacket, Packet, PacketError, SecurityBytes, TryFromPacket, TryIntoPacket,
+};
 use skrillax_security::handshake::{CheckBytesInitialization, PassiveEncryptionInitializationData};
 use skrillax_security::{
     ActiveHandshake, PassiveHandshake, SecurityFeature, SilkroadSecurityError,
@@ -8,58 +48,18 @@ use skrillax_security::{
 use skrillax_serde::{ByteSize, Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
-
-macro_rules! define_protocol {
-    ($name:ident, $($enumValue:ident),*) => {
-        enum $name {
-            $(
-                $enumValue($enumValue),
-            )*
-        }
-
-        impl skrillax_packet::TryFromPacket for $name {
-            fn try_deserialize(opcode: u16, data: &[u8]) -> Result<(usize, Self), skrillax_packet::PacketError> {
-                match opcode {
-                    $(
-                        $enumValue::ID => {
-                            let (consumed, res) = $enumValue::try_deserialize(opcode, data)?;
-                            Ok((consumed, $name::$enumValue(res)))
-                        }
-                    )*
-                    _ => Err(skrillax_packet::PacketError::MismatchedOpcode {
-                        expected: 0,
-                        received: opcode
-                    })
-                }
-            }
-        }
-
-        impl skrillax_packet::TryIntoPacket for $name {
-            fn serialize(&self) -> OutgoingPacket {
-                match self {
-                    $(
-                        $name::$enumValue(inner) => inner.serialize(),
-                    )*
-                }
-            }
-        }
-
-        $(
-            impl From<$enumValue> for $name {
-                fn from(value: $enumValue) -> Self {
-                    $name::$enumValue(value)
-                }
-            }
-        )*
-    };
-}
+use tokio::io::{AsyncRead, AsyncWrite};
 
 #[derive(Error, Debug)]
 pub enum HandshakeError {
-    #[error("An error occurred at the stream level")]
-    StreamError(#[from] StreamError),
+    #[error("An error occurred while receiving data")]
+    InputError(#[from] InStreamError),
+    #[error("An error occurred while writing data")]
+    OutputError(#[from] OutStreamError),
     #[error("A security level error occurred")]
     SecurityError(#[from] SilkroadSecurityError),
+    #[error("An error occurred at the packet level")]
+    PacketError(#[from] PacketError),
     #[error("Expected to receive a challenge, but received something else")]
     NoChallengeReceived,
     #[error("We didn't get an acknowledgment for the challenge response")]
@@ -68,7 +68,7 @@ pub enum HandshakeError {
     InvalidContentFlag,
 }
 
-#[derive(Serialize, Deserialize, ByteSize, Copy, Clone, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, ByteSize, Copy, Clone, Eq, PartialEq, Debug)]
 struct HandshakeContent(u8);
 
 impl Default for HandshakeContent {
@@ -87,7 +87,7 @@ bitflags! {
     }
 }
 
-#[derive(Serialize, ByteSize, Deserialize, Copy, Clone)]
+#[derive(Serialize, ByteSize, Deserialize, Copy, Clone, Debug)]
 struct HandshakeInitialization {
     handshake_seed: u64,
     a: u32,
@@ -95,7 +95,7 @@ struct HandshakeInitialization {
     c: u32,
 }
 
-#[derive(Packet, ByteSize, Serialize, Deserialize, Default, Copy, Clone)]
+#[derive(Packet, ByteSize, Serialize, Deserialize, Default, Copy, Clone, Debug)]
 #[packet(opcode = 0x5000)]
 struct SecurityCapabilityCheck {
     flag: HandshakeContent,
@@ -134,45 +134,156 @@ impl SecurityCapabilityCheck {
     }
 }
 
-define_protocol! {
-    HandshakeActiveProtocol,
-    SecurityCapabilityCheck
+impl Into<HandshakeActiveProtocol> for SecurityCapabilityCheck {
+    fn into(self) -> HandshakeActiveProtocol {
+        HandshakeActiveProtocol::SecurityCapabilityCheck(self)
+    }
 }
 
-#[derive(Packet, ByteSize, Serialize, Deserialize)]
+enum HandshakeActiveProtocol {
+    SecurityCapabilityCheck(SecurityCapabilityCheck),
+}
+
+impl OutputProtocol for HandshakeActiveProtocol {
+    fn to_packet(&self) -> OutgoingPacket {
+        match self {
+            HandshakeActiveProtocol::SecurityCapabilityCheck(check) => check.serialize(),
+        }
+    }
+}
+
+impl InputProtocol for HandshakeActiveProtocol {
+    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), InStreamError> {
+        match opcode {
+            SecurityCapabilityCheck::ID => {
+                let (consumed, check) = SecurityCapabilityCheck::try_deserialize(data)?;
+                Ok((
+                    consumed,
+                    HandshakeActiveProtocol::SecurityCapabilityCheck(check),
+                ))
+            }
+            _ => Err(InStreamError::UnmatchedOpcode(opcode)),
+        }
+    }
+}
+
+#[derive(Packet, ByteSize, Serialize, Deserialize, Debug)]
 #[packet(opcode = 0x5000)]
-pub struct HandshakeChallenge {
+struct HandshakeChallenge {
     pub b: u32,
     pub key: u64,
 }
 
-#[derive(Packet, ByteSize, Serialize, Deserialize)]
+impl Into<HandshakePassiveProtocol> for HandshakeChallenge {
+    fn into(self) -> HandshakePassiveProtocol {
+        HandshakePassiveProtocol::HandshakeChallenge(self)
+    }
+}
+
+#[derive(Packet, ByteSize, Serialize, Deserialize, Debug)]
 #[packet(opcode = 0x9000)]
-pub struct HandshakeAccepted;
+struct HandshakeAccepted;
 
-define_protocol! {
-    HandshakePassiveProtocol,
-    HandshakeChallenge,
-    HandshakeAccepted
+impl Into<HandshakePassiveProtocol> for HandshakeAccepted {
+    fn into(self) -> HandshakePassiveProtocol {
+        HandshakePassiveProtocol::HandshakeAccepted(self)
+    }
 }
 
-pub struct ActiveSecuritySetup<'a> {
-    reader: &'a mut SilkroadStreamRead,
-    writer: &'a mut SilkroadStreamWrite,
+enum HandshakePassiveProtocol {
+    HandshakeChallenge(HandshakeChallenge),
+    HandshakeAccepted(HandshakeAccepted),
 }
 
-impl ActiveSecuritySetup<'_> {
+impl InputProtocol for HandshakePassiveProtocol {
+    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), InStreamError> {
+        match opcode {
+            HandshakeAccepted::ID => {
+                let (consumed, accepted) = HandshakeAccepted::try_deserialize(data)?;
+                Ok((
+                    consumed,
+                    HandshakePassiveProtocol::HandshakeAccepted(accepted),
+                ))
+            }
+            HandshakeChallenge::ID => {
+                let (consumed, challenge) = HandshakeChallenge::try_deserialize(data)?;
+                Ok((
+                    consumed,
+                    HandshakePassiveProtocol::HandshakeChallenge(challenge),
+                ))
+            }
+            _ => Err(InStreamError::UnmatchedOpcode(opcode)),
+        }
+    }
+}
+
+impl OutputProtocol for HandshakePassiveProtocol {
+    fn to_packet(&self) -> OutgoingPacket {
+        match self {
+            HandshakePassiveProtocol::HandshakeChallenge(challenge) => challenge.serialize(),
+            HandshakePassiveProtocol::HandshakeAccepted(accept) => accept.serialize(),
+        }
+    }
+}
+
+/// Active part of a Silkroad Online connection handshake.
+///
+/// The active part in a handshake thats the initialization process and will
+/// also decide the security features ([SecurityFeature]) available for the
+/// connection. By default, all security features will be made available.
+/// Using [ActiveSecuritySetup::handle] will default to all features, while
+/// [ActiveSecuritySetup::handle_with_features] allows you to pick which
+/// features should be enabled, if any.
+///
+/// ```ignore
+/// AsyncSecuritySetup::handle(&mut reader, &mut writer).await
+/// // OR
+/// AsyncSecuritySetup::handle_with_features(&mut reader, &mut writer, SecurityFeature::CHECKS).await
+/// ```
+///
+/// Once complete, it will set the [skrillax_packet::SecurityContext] of the
+/// reader & writer with the enabled features. This will then allow, for
+/// example, sending and receiving of encrypted packets.
+pub struct ActiveSecuritySetup<'a, T: AsyncRead + Unpin, S: AsyncWrite + Unpin> {
+    reader: &'a mut SilkroadStreamRead<T>,
+    writer: &'a mut SilkroadStreamWrite<S>,
+    enabled_features: SecurityFeature,
+}
+
+impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> ActiveSecuritySetup<'_, T, S> {
+    /// Starts and executes the handshake procedures as the active participant with default security features.
     pub async fn handle(
-        reader: &mut SilkroadStreamRead,
-        writer: &mut SilkroadStreamWrite,
+        reader: &mut SilkroadStreamRead<T>,
+        writer: &mut SilkroadStreamWrite<S>,
     ) -> Result<(), HandshakeError> {
-        ActiveSecuritySetup { reader, writer }.initialize().await
+        ActiveSecuritySetup {
+            reader,
+            writer,
+            enabled_features: SecurityFeature::all(),
+        }
+        .initialize()
+        .await
     }
 
-    pub async fn initialize(self) -> Result<(), HandshakeError> {
+    /// Starts and executes the handshake procedures as the active participant with predefined security features.
+    pub async fn handle_with_features(
+        reader: &mut SilkroadStreamRead<T>,
+        writer: &mut SilkroadStreamWrite<S>,
+        enabled_features: SecurityFeature,
+    ) -> Result<(), HandshakeError> {
+        ActiveSecuritySetup {
+            reader,
+            writer,
+            enabled_features,
+        }
+        .initialize()
+        .await
+    }
+
+    async fn initialize(self) -> Result<(), HandshakeError> {
         let (reader, writer) = (self.reader, self.writer);
         let mut setup = ActiveHandshake::default();
-        let init = setup.initialize(SecurityFeature::all())?;
+        let init = setup.initialize(self.enabled_features)?;
 
         if let Some(checks) = init.checks.as_ref() {
             let security_bytes = Arc::new(SecurityBytes::from_seeds(
@@ -216,17 +327,18 @@ impl ActiveSecuritySetup<'_> {
             ..Default::default()
         };
         writer
-            .send::<HandshakeActiveProtocol>(init_packet.into())
+            .write_packet::<HandshakeActiveProtocol>(init_packet.into())
             .await?;
 
         let response = reader.next_packet::<HandshakePassiveProtocol>().await?;
+
         let HandshakePassiveProtocol::HandshakeChallenge(challenge) = response else {
             return Err(HandshakeError::NoChallengeReceived);
         };
 
         let challenge = setup.start_challenge(challenge.b, challenge.key)?;
         writer
-            .send::<HandshakeActiveProtocol>(
+            .write_packet::<HandshakeActiveProtocol>(
                 SecurityCapabilityCheck {
                     flag: HandshakeContent::FINISH,
                     challenge: Some(challenge),
@@ -251,20 +363,38 @@ impl ActiveSecuritySetup<'_> {
     }
 }
 
-pub struct PassiveSecuritySetup<'a> {
-    reader: &'a mut SilkroadStreamRead,
-    writer: &'a mut SilkroadStreamWrite,
+/// Passive part of a Silkroad Online connection handshake.
+///
+/// The passive part of the handshake simply accepts the settings the
+/// active part suggests to use and there is no negotiation happening.
+/// Right now, we expect the other part of the connection to be the
+/// active part and also that it will want to do a handshake. We do not
+/// yet account for both sides to be passive.
+///
+/// Since we're play not active role in choosing which features are
+/// available, there's only one way to perform the handshake:
+/// ```ignore
+/// PassiveSecuritySetup::handle(&mut reader, &mut writer).await
+/// ```
+///
+/// Similarly to the active setup, this will configure the security
+/// context in the reader & writer according to the features set by the
+/// active part.
+pub struct PassiveSecuritySetup<'a, T: AsyncRead + Unpin, S: AsyncWrite + Unpin> {
+    reader: &'a mut SilkroadStreamRead<T>,
+    writer: &'a mut SilkroadStreamWrite<S>,
 }
 
-impl PassiveSecuritySetup<'_> {
+impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S> {
+    /// Perform the handshake with the features decided by the active part.
     pub async fn handle(
-        reader: &mut SilkroadStreamRead,
-        writer: &mut SilkroadStreamWrite,
+        reader: &mut SilkroadStreamRead<T>,
+        writer: &mut SilkroadStreamWrite<S>,
     ) -> Result<(), HandshakeError> {
         PassiveSecuritySetup { reader, writer }.initialize().await
     }
 
-    pub async fn initialize(self) -> Result<(), HandshakeError> {
+    async fn initialize(self) -> Result<(), HandshakeError> {
         let (reader, writer) = (self.reader, self.writer);
         let mut handshake = PassiveHandshake::default();
 
@@ -288,7 +418,7 @@ impl PassiveSecuritySetup<'_> {
 
         if let Some((key, b)) = challenge {
             writer
-                .send::<HandshakePassiveProtocol>(HandshakeChallenge { b, key }.into())
+                .write_packet::<HandshakePassiveProtocol>(HandshakeChallenge { b, key }.into())
                 .await?;
 
             let finalize = reader.next_packet::<HandshakeActiveProtocol>().await?;
@@ -303,7 +433,7 @@ impl PassiveSecuritySetup<'_> {
 
             handshake.finish(challenge)?;
             writer
-                .send::<HandshakePassiveProtocol>(HandshakeAccepted.into())
+                .write_packet::<HandshakePassiveProtocol>(HandshakeAccepted.into())
                 .await?;
         }
 
@@ -359,7 +489,7 @@ mod test {
         assert!(reader.encryption().is_some());
         assert!(writer.encryption().is_some());
         writer
-            .send(Test {
+            .write_packet(Test {
                 content: String::from("Hello!"),
             })
             .await

@@ -60,8 +60,6 @@ use skrillax_serde::{ByteSize, Deserialize, SerializationError, Serialize};
 
 #[derive(Error, Debug)]
 pub enum PacketError {
-    #[error("The packet expected the opcode {expected:#06x} but got {received:#06x}")]
-    MismatchedOpcode { expected: u16, received: u16 },
     #[error("The packet cannot be serialized")]
     NonSerializable,
     #[cfg(feature = "serde")]
@@ -91,7 +89,7 @@ pub trait Packet: Sized {
 /// An incoming packet that has already gone through re-framing of massive packets
 /// or decryption. It is essentially a collection of bytes for a given opcode,
 /// nothing more.
-#[derive(Eq, PartialEq)]
+#[derive(Eq, PartialEq, Debug)]
 pub struct IncomingPacket {
     opcode: u16,
     data: Bytes,
@@ -114,12 +112,6 @@ impl IncomingPacket {
 
     pub fn data(&self) -> &[u8] {
         &self.data
-    }
-
-    pub fn try_into_packet<T: TryFromPacket>(self) -> Result<T, PacketError> {
-        let (opcode, data) = self.consume();
-        let (_, packet) = T::try_deserialize(opcode, &data)?;
-        Ok(packet)
     }
 }
 
@@ -159,13 +151,15 @@ pub trait TryIntoPacket {
 ///
 /// The analog is [TryIntoPacket].
 pub trait TryFromPacket: Sized {
-    /// Tries to create `Self` from the given opcode and the data.
+    /// Tries to create `Self` from the given data. Unlike [TryIntoPacket], we do not deal
+    /// with the opcode here. It is expected that we have already matched the opcode to
+    /// `Self` and know it matches.
     ///
-    /// The opcode may not be necessary to create `Self`, if `Self` is a single packet. `data` _may_
-    /// contain more data than necessary, for example if we were inside a massive
-    /// frame. Thus, we need to return the amount of consumed bytes such that the
-    /// remainder may be used to create more elements of `Self` if the caller wants to.
-    fn try_deserialize(opcode: u16, data: &[u8]) -> Result<(usize, Self), PacketError>;
+    /// `data` _may_ contain more data than necessary to form a single packet, for example
+    /// if we were inside a massive frame. Thus, we need to return the amount of consumed
+    /// bytes such that the remainder may be used to create more elements of `Self` if the
+    /// caller wants to.
+    fn try_deserialize(data: &[u8]) -> Result<(usize, Self), PacketError>;
 }
 
 #[cfg(feature = "serde")]
@@ -173,16 +167,8 @@ impl<T> TryFromPacket for T
 where
     T: Packet + Deserialize,
 {
-    fn try_deserialize(opcode: u16, data: &[u8]) -> Result<(usize, Self), PacketError> {
+    fn try_deserialize(data: &[u8]) -> Result<(usize, Self), PacketError> {
         use bytes::Buf;
-
-        if opcode != Self::ID {
-            return Err(PacketError::MismatchedOpcode {
-                expected: Self::ID,
-                received: opcode,
-            });
-        }
-
         let mut reader = data.reader();
         let read = Self::read_from(&mut reader)?;
         let consumed = data.len() - reader.into_inner().len();
@@ -227,6 +213,12 @@ where
     }
 }
 
+#[derive(Error, Debug)]
+pub enum FramingError {
+    #[error("Tried to create an encrypted frame but no encrypted was set up")]
+    MissingEncryption,
+}
+
 /// A procedure to turn an element into actual [skrillax_codec::SilkroadFrame]s, which can
 /// be written by the codec onto the wire.
 pub trait AsFrames {
@@ -237,11 +229,11 @@ pub trait AsFrames {
     /// this can optionally receive the security to be used. If no
     /// security is passed, but an encrypted packet is requested, this
     /// may error.
-    fn as_frames(&self, context: SecurityContext) -> Result<Vec<SilkroadFrame>, PacketError>;
+    fn as_frames(&self, context: SecurityContext) -> Result<Vec<SilkroadFrame>, FramingError>;
 }
 
 impl AsFrames for OutgoingPacket {
-    fn as_frames(&self, context: SecurityContext) -> Result<Vec<SilkroadFrame>, PacketError> {
+    fn as_frames(&self, context: SecurityContext) -> Result<Vec<SilkroadFrame>, FramingError> {
         let count = context
             .checkers()
             .map(|check| check.generate_count_byte())
@@ -250,7 +242,7 @@ impl AsFrames for OutgoingPacket {
         match self {
             OutgoingPacket::Encrypted { opcode, data } => {
                 let Some(encryption) = context.encryption() else {
-                    return Err(PacketError::MissingSecurity);
+                    return Err(FramingError::MissingEncryption);
                 };
                 let content_length = data.len() + 4;
                 let length_with_padding = SilkroadEncryption::find_encrypted_length(content_length);
@@ -382,7 +374,7 @@ pub enum ReframingError {
 }
 
 /// Provides a way to turn [SilkroadFrame]s into an [IncomingPacket].
-pub trait FromFrames {
+pub trait FromFrames: Sized {
     /// Try to turn _all_ frames into an incoming packet.
     ///
     /// This accepts a slice of frames, which is either a single packet frame (plain or encrypted),
@@ -394,7 +386,7 @@ pub trait FromFrames {
     fn from_frames(
         frames: &[SilkroadFrame],
         security: SecurityContext,
-    ) -> Result<IncomingPacket, ReframingError>;
+    ) -> Result<Self, ReframingError>;
 }
 
 struct MassiveInfo {
@@ -406,7 +398,7 @@ impl FromFrames for IncomingPacket {
     fn from_frames(
         frames: &[SilkroadFrame],
         security: SecurityContext,
-    ) -> Result<IncomingPacket, ReframingError> {
+    ) -> Result<Self, ReframingError> {
         let mut massive_information: Option<MassiveInfo> = None;
         let mut massive_buffer: Option<BytesMut> = None;
         for (i, frame) in frames.iter().enumerate() {

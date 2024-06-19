@@ -33,7 +33,7 @@ fn start_server() {
             .expect("Security setup should be handled.");
         let packet = reader.next_packet::<ClientHello>().await.unwrap();
         writer
-            .send(ServerHello(format!("Hello {} from server :)", packet.0)))
+            .write_packet(ServerHello(format!("Hello {} from server :)", packet.0)))
             .await
             .unwrap();
     });
@@ -50,7 +50,7 @@ async fn run_client() {
         .await
         .expect("Security setup should be handled.");
     writer
-        .send(ClientHello(String::from("Test Client")))
+        .write_packet(ClientHello(String::from("Test Client")))
         .await
         .unwrap();
     let packet = reader

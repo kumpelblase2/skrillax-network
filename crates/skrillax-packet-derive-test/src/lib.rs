@@ -37,8 +37,7 @@ mod tests {
 
     #[test]
     fn test_deserialize() {
-        let (_, deserialized) =
-            TestDeserializeOnly::try_deserialize(0x0001, &[0x42, 0x42]).unwrap();
+        let (_, deserialized) = TestDeserializeOnly::try_deserialize(&[0x42, 0x42]).unwrap();
         assert_eq!(deserialized.field, 0x4242);
     }
 }
