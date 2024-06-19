@@ -1,20 +1,46 @@
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
-use skrillax_codec::SilkroadCodec;
+use futures::{SinkExt, Stream, StreamExt};
+use skrillax_codec::{SilkroadCodec, SilkroadFrame};
 use skrillax_packet::{
-    AsFrames, FromFrames, IncomingPacket, OutgoingPacket, PacketError, ReframingError,
-    SecurityBytes, SecurityContext, TryFromPacket, TryIntoPacket,
+    AsFrames, FramingError, FromFrames, IncomingPacket, OutgoingPacket, Packet, PacketError,
+    ReframingError, SecurityBytes, SecurityContext, TryFromPacket, TryIntoPacket,
 };
 use skrillax_security::SilkroadEncryption;
 use std::io;
 use std::sync::Arc;
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
+/// Errors for possible problems writing packets.
+///
+/// When writing packets to be sent over the wire a few issues can appear,
+/// which are represented by this error.
 #[derive(Debug, Error)]
-pub enum StreamError {
+pub enum OutStreamError {
+    /// Some I/O related issue occurred. This generally means the underlying
+    /// transport layer was disconnected or otherwise impaired.
+    #[error("Some IO level error occurred")]
+    IoError(#[from] io::Error),
+    /// Something went wrong when trying to create frame(s) for the packet.
+    /// This currently can only happen if an encrypted frame is supposed to
+    /// be built, but no encryption has been configured.
+    #[error("Error occurred when trying to create frames")]
+    Framing(#[from] FramingError),
+}
+
+/// Errors encountered when reading packets.
+///
+/// Unlike [OutStreamError], there are many more possibilities for an error
+/// to occur here, due to accepting mostly untrusted input.
+#[derive(Debug, Error)]
+pub enum InStreamError {
+    /// Something went wrong on the I/O layer.
+    ///
+    /// When the underlying transport layer was disconnected or had other
+    /// issues while trying to read data, this error occurs.
     #[error("Some IO level error occurred")]
     IoError(#[from] io::Error),
     #[error("Error occurred at the packet level")]
@@ -23,14 +49,41 @@ pub enum StreamError {
     ReframingError(#[from] ReframingError),
     #[error("Reached the end of the stream")]
     EndOfStream,
+    #[error("Received unexpected opcode: {0:#06x}")]
+    UnmatchedOpcode(u16),
+}
+
+///
+pub trait OutputProtocol {
+    fn to_packet(&self) -> OutgoingPacket;
+}
+
+impl<T: TryIntoPacket> OutputProtocol for T {
+    fn to_packet(&self) -> OutgoingPacket {
+        self.serialize()
+    }
+}
+
+///
+pub trait InputProtocol: Sized {
+    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), InStreamError>;
+}
+
+impl<T: TryFromPacket + Packet> InputProtocol for T {
+    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), InStreamError> {
+        if opcode != T::ID {
+            return Err(InStreamError::UnmatchedOpcode(opcode));
+        }
+
+        Ok(T::try_deserialize(data)?)
+    }
 }
 
 /// Extensions to [TcpStream] to convert it into a silkroad stream, sending
 /// and receiving silkroad packets.
 pub trait SilkroadTcpExt {
-    /// Creates an actively encrypted stream, in other words a stream which will
-    /// prefer to set up encryption. This is the case for most client originating
-    /// streams.
+    /// Creates a stream using the existing socket, wrapping it into a stream to read
+    /// and write [IncomingPacket] & [OutgoingPacket].
     ///
     /// ```
     /// # use std::error::Error;
@@ -43,11 +96,21 @@ pub trait SilkroadTcpExt {
     /// # Ok(())
     /// # }
     /// ```
-    fn into_silkroad_stream(self) -> (SilkroadStreamRead, SilkroadStreamWrite);
+    fn into_silkroad_stream(
+        self,
+    ) -> (
+        SilkroadStreamRead<OwnedReadHalf>,
+        SilkroadStreamWrite<OwnedWriteHalf>,
+    );
 }
 
 impl SilkroadTcpExt for TcpStream {
-    fn into_silkroad_stream(self) -> (SilkroadStreamRead, SilkroadStreamWrite) {
+    fn into_silkroad_stream(
+        self,
+    ) -> (
+        SilkroadStreamRead<OwnedReadHalf>,
+        SilkroadStreamWrite<OwnedWriteHalf>,
+    ) {
         let (read, write) = self.into_split();
         let reader = FramedRead::new(read, SilkroadCodec);
         let writer = FramedWrite::new(write, SilkroadCodec);
@@ -59,14 +122,18 @@ impl SilkroadTcpExt for TcpStream {
     }
 }
 
-pub struct SilkroadStreamWrite {
-    writer: FramedWrite<OwnedWriteHalf, SilkroadCodec>,
+/// The writing side of a Silkroad Online connection.
+///
+/// This is an analog to [OwnedWriteHalf], containing additional state to facilitate
+/// a Silkroad connection, such as encryption.
+pub struct SilkroadStreamWrite<T: AsyncWrite + Unpin> {
+    writer: FramedWrite<T, SilkroadCodec>,
     encryption: Option<Arc<SilkroadEncryption>>,
     security_bytes: Option<Arc<SecurityBytes>>,
 }
 
-impl SilkroadStreamWrite {
-    fn new(writer: FramedWrite<OwnedWriteHalf, SilkroadCodec>) -> Self {
+impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
+    fn new(writer: FramedWrite<T, SilkroadCodec>) -> Self {
         Self {
             writer,
             encryption: None,
@@ -76,7 +143,7 @@ impl SilkroadStreamWrite {
 
     #[allow(unused)]
     fn with_encryption(
-        writer: FramedWrite<OwnedWriteHalf, SilkroadCodec>,
+        writer: FramedWrite<T, SilkroadCodec>,
         encryption: Arc<SilkroadEncryption>,
         security_bytes: Arc<SecurityBytes>,
     ) -> Self {
@@ -107,7 +174,7 @@ impl SilkroadStreamWrite {
         SecurityContext::new(self.encryption(), self.security_bytes())
     }
 
-    pub async fn write(&mut self, packet: OutgoingPacket) -> Result<(), StreamError> {
+    pub async fn write(&mut self, packet: OutgoingPacket) -> Result<(), OutStreamError> {
         let frames = packet.as_frames(self.security_context())?;
         for frame in frames {
             self.writer.send(frame).await?;
@@ -115,20 +182,26 @@ impl SilkroadStreamWrite {
         Ok(())
     }
 
-    pub async fn send<T: TryIntoPacket>(&mut self, packet: T) -> Result<(), StreamError> {
-        self.write(packet.serialize()).await
+    pub async fn write_packet<S: OutputProtocol>(
+        &mut self,
+        packet: S,
+    ) -> Result<(), OutStreamError> {
+        self.write(packet.to_packet()).await
     }
 }
 
-pub struct SilkroadStreamRead {
-    reader: FramedRead<OwnedReadHalf, SilkroadCodec>,
+pub struct SilkroadStreamRead<T: AsyncRead + Unpin> {
+    reader: FramedRead<T, SilkroadCodec>,
     encryption: Option<Arc<SilkroadEncryption>>,
     security_bytes: Option<Arc<SecurityBytes>>,
     unconsumed: Option<(u16, Bytes)>,
 }
 
-impl SilkroadStreamRead {
-    fn new(reader: FramedRead<OwnedReadHalf, SilkroadCodec>) -> Self {
+impl<T: AsyncRead + Unpin> SilkroadStreamRead<T>
+where
+    FramedRead<T, SilkroadCodec>: Stream<Item = Result<SilkroadFrame, io::Error>>,
+{
+    fn new(reader: FramedRead<T, SilkroadCodec>) -> Self {
         Self {
             reader,
             encryption: None,
@@ -139,7 +212,7 @@ impl SilkroadStreamRead {
 
     #[allow(unused)]
     fn with_encryption(
-        reader: FramedRead<OwnedReadHalf, SilkroadCodec>,
+        reader: FramedRead<T, SilkroadCodec>,
         encryption: Arc<SilkroadEncryption>,
         security_bytes: Arc<SecurityBytes>,
     ) -> Self {
@@ -171,7 +244,7 @@ impl SilkroadStreamRead {
         SecurityContext::new(self.encryption(), self.security_bytes())
     }
 
-    pub async fn next(&mut self) -> Result<IncomingPacket, StreamError> {
+    pub async fn next(&mut self) -> Result<IncomingPacket, InStreamError> {
         let mut buffer = Vec::new();
         let mut remaining = 1usize;
         while let Some(res) = self.reader.next().await {
@@ -184,26 +257,66 @@ impl SilkroadStreamRead {
                     Err(ReframingError::Incomplete(required)) => {
                         remaining += required.unwrap_or(1);
                     }
-                    Err(e) => return Err(StreamError::ReframingError(e)),
+                    Err(e) => return Err(InStreamError::ReframingError(e)),
                 }
             }
         }
 
-        Err(StreamError::EndOfStream)
+        Err(InStreamError::EndOfStream)
     }
 
-    pub async fn next_packet<T: TryFromPacket>(&mut self) -> Result<T, StreamError> {
+    /// Tries to serialize the next incoming packet into the given protocol.
+    ///
+    /// This will poll the underlying transport layer to read a new packet
+    /// and will then try to serialize into a matching packet of the given
+    /// protocol. We expect that all packets are part of the given protocol,
+    /// otherwise it will be _discarded_ and [InStreamError::UnmatchedOpcode]
+    /// will be returned.
+    pub async fn next_packet<S: InputProtocol>(&mut self) -> Result<S, InStreamError> {
         let (opcode, mut buffer) = match self.unconsumed.take() {
             Some(inner) => inner,
             _ => self.next().await?.consume(),
         };
 
-        let (consumed, p) = T::try_deserialize(opcode, &buffer)?;
+        let (consumed, p) = S::create_from(opcode, &buffer)?;
         let _ = buffer.split_to(consumed);
         if !buffer.is_empty() {
             self.unconsumed = Some((opcode, buffer));
         }
 
         Ok(p)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use skrillax_serde::{ByteSize, Deserialize, Serialize};
+
+    #[derive(Packet, Deserialize, Serialize, ByteSize)]
+    #[packet(opcode = 0x0042)]
+    struct Empty;
+
+    #[tokio::test]
+    pub async fn test_read_packet_from_stream() {
+        let buffer: &[u8] = &[0x00, 0x00, 0x42, 0x00, 0x00, 0x00];
+        let mut reader = SilkroadStreamRead::new(FramedRead::new(buffer, SilkroadCodec));
+        let _ = reader
+            .next_packet::<Empty>()
+            .await
+            .expect("Should read empty packet.");
+    }
+
+    #[tokio::test]
+    pub async fn test_write_packet_to_stream() {
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut writer = SilkroadStreamWrite::new(FramedWrite::new(&mut buffer, SilkroadCodec));
+        writer
+            .write_packet(Empty)
+            .await
+            .expect("Should write empty packet.");
+        drop(writer);
+        let content: &[u8] = &buffer;
+        assert_eq!(&[0x00u8, 0x00, 0x42, 0x00, 0x00, 0x00], content);
     }
 }

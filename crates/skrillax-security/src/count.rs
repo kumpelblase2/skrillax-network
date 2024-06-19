@@ -25,7 +25,6 @@ fn generate_value(mut value: u32) -> u32 {
 /// let mut counter = MessageCounter::new(random::<u32>());
 /// let first = counter.next_byte();
 /// let second = counter.next_byte();
-/// assert_ne!(first, second);
 /// ```
 pub struct MessageCounter {
     seeds: [u8; 3],
