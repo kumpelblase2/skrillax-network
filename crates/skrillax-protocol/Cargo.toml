@@ -1,0 +1,12 @@
+[package]
+name = "skrillax-protocol"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+skrillax-packet = { version = "0.1.0", path = "../skrillax-packet" }
+skrillax-stream = { version = "0.1.0", path = "../skrillax-stream" }
+
+[dev-dependencies]
+skrillax-packet = { version = "0.1.0", path = "../skrillax-packet", features = ["derive"] }
+skrillax-serde = { version = "0.1.1", path = "../skrillax-serde", features = ["derive"] }

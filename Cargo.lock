@@ -609,6 +609,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "skrillax-protocol"
+version = "0.1.0"
+dependencies = [
+ "skrillax-packet",
+ "skrillax-serde",
+ "skrillax-stream",
+]
+
+[[package]]
 name = "skrillax-security"
 version = "0.1.0"
 dependencies = [
