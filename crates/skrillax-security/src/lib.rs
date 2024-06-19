@@ -62,7 +62,7 @@ const BLOWFISH_BLOCK_SIZE: usize = 8;
 /// Handles the encryption/decryption of data in Silkroad Online.
 ///
 /// Generally only the client encrypts data, but this is a generic encryption setup. This is
-/// essentially a thin veil around [BlowfishCompat], only ensuring the right block size has been
+/// essentially a thin veil around [BlowfishLE], only ensuring the right block size has been
 /// used.
 ///
 /// You can create this with a predefined key:
