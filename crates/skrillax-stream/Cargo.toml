@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-skrillax-security = { path = "../skrillax-security" }
+skrillax-security = { path = "../skrillax-security", version = "0.1.0" }
 byteorder.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
@@ -14,9 +14,9 @@ tokio-util = { version = "0.7", features = ["codec"] }
 log = "0.4"
 tokio = { version = "1.37", features = ["net"] }
 crossbeam-channel = "0.5"
-skrillax-serde = { path = "../skrillax-serde", features = ["derive"] }
-skrillax-packet = { path = "../skrillax-packet", features = ["serde", "derive"] }
-skrillax-codec = { path = "../skrillax-codec" }
+skrillax-serde = { path = "../skrillax-serde", features = ["derive"], version = "0.1.1" }
+skrillax-packet = { path = "../skrillax-packet", features = ["serde", "derive"], version = "0.2.0" }
+skrillax-codec = { path = "../skrillax-codec", version = "0.1.1" }
 futures = "0.3"
 bitflags = "2.5"
 
