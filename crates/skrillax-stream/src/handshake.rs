@@ -1,14 +1,16 @@
-//! The handshake module provides procedures to asynchronously handle the handshake.
+//! The handshake module provides procedures to asynchronously handle the
+//! handshake.
 //!
-//! In most cases, the first thing that happens in a connection between a Silkroad
-//! server and client is the security handshake. This should always happend, but
-//! doesn't necessarily have to establish encryption. The handshake is split into
-//! the active part and the passive part. In normal operation, the server takes on
-//! the active role, while the client takes on the passive role. Active in this case
-//! means it will actively initiate the handshake, while the passive party will wait
-//! for the handshake to be initiated. Therefor, a server would use the
-//! [ActiveSecuritySetup], while a client would turn to the [PassiveSecuritySetup].
-//! Both operate on a Silkroad Stream, i.e. a [crate::stream::SilkroadStreamRead]
+//! In most cases, the first thing that happens in a connection between a
+//! Silkroad server and client is the security handshake. This should always
+//! happend, but doesn't necessarily have to establish encryption. The handshake
+//! is split into the active part and the passive part. In normal operation, the
+//! server takes on the active role, while the client takes on the passive role.
+//! Active in this case means it will actively initiate the handshake, while the
+//! passive party will wait for the handshake to be initiated. Therefor, a
+//! server would use the [ActiveSecuritySetup], while a client would turn to the
+//! [PassiveSecuritySetup]. Both operate on a Silkroad Stream, i.e. a
+//! [crate::stream::SilkroadStreamRead]
 //! and [crate::stream::SilkroadStreamWrite].
 //!
 //! Both sides provide a `handle` method which will complete the handshake from
@@ -23,15 +25,20 @@
 //! # let listen_addr = "127.0.0.1:1337".parse().unwrap();
 //! # let socket = TcpSocket::new_v4().unwrap().connect(listen_addr).await.unwrap();
 //! let (mut reader, mut writer) = socket.into_silkroad_stream();
-//! ActiveSecuritySetup::handle(&mut reader, &mut writer).await.expect("Active setup should complete.");
+//! ActiveSecuritySetup::handle(&mut reader, &mut writer)
+//!     .await
+//!     .expect("Active setup should complete.");
 //! // OR
-//! PassiveSecuritySetup::handle(&mut reader, &mut writer).await.expect("Passive setup should complete.");
+//! PassiveSecuritySetup::handle(&mut reader, &mut writer)
+//!     .await
+//!     .expect("Passive setup should complete.");
 //! # }
 //! ```
 //!
-//! After the handshake is finished, we can continue using the reader and writer to
-//! send packets. If we used the default or specifically configured encryption as a
-//! security feature, we can also now send and receive encrypted packets.
+//! After the handshake is finished, we can continue using the reader and writer
+//! to send packets. If we used the default or specifically configured
+//! encryption as a security feature, we can also now send and receive encrypted
+//! packets.
 
 use crate::stream::{
     InStreamError, InputProtocol, OutStreamError, OutputProtocol, SilkroadStreamRead,
@@ -251,7 +258,8 @@ pub struct ActiveSecuritySetup<'a, T: AsyncRead + Unpin, S: AsyncWrite + Unpin> 
 }
 
 impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> ActiveSecuritySetup<'_, T, S> {
-    /// Starts and executes the handshake procedures as the active participant with default security features.
+    /// Starts and executes the handshake procedures as the active participant
+    /// with default security features.
     pub async fn handle(
         reader: &mut SilkroadStreamRead<T>,
         writer: &mut SilkroadStreamWrite<S>,
@@ -265,7 +273,8 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> ActiveSecuritySetup<'_, T, S> 
         .await
     }
 
-    /// Starts and executes the handshake procedures as the active participant with predefined security features.
+    /// Starts and executes the handshake procedures as the active participant
+    /// with predefined security features.
     pub async fn handle_with_features(
         reader: &mut SilkroadStreamRead<T>,
         writer: &mut SilkroadStreamWrite<S>,

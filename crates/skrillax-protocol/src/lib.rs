@@ -1,3 +1,18 @@
+//! Provides a macro to create 'protocols'.
+//!
+//! This expected to be used for the [skrillax_stream] crate.
+//!
+//! A protocol defines a set of opcodes and their respective structures. It is
+//! essentially a mapping of `opcode -> struct`. To encourage more static
+//! dispatch and better developer ergonimics, we want to provide a nice way of
+//! constructing these mappings. Otherwise, this would become quite tedious.
+//! Additionally, this also generates some convenience functions to
+//! automatically move between different protocols that are related.
+//!
+//! The macro to use is the [define_protocol!] macro - any other macro exports
+//! are just helper macros and should be ignored.
+
+#[doc(hidden)]
 #[macro_export]
 macro_rules! __match_packet_opcode {
     ($opcodeVar:ident =>) => {false};
@@ -6,6 +21,7 @@ macro_rules! __match_packet_opcode {
     };
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! __match_protocol_opcode {
     ($opcodeVar:ident =>) => {false};
@@ -14,6 +30,37 @@ macro_rules! __match_protocol_opcode {
     };
 }
 
+/// Defines a protocol from a list of packets and/or other protocols.
+///
+/// A protocol always has a name and may contain packets and/or other protocols.
+/// This protocol will then be represented as an enum, where each of the
+/// packets/protocols is its own variant. With this enum, all the necessary
+/// traits for usage with [skrillax_stream] will then be implemented. In
+/// particular, the following traits will be implement by the generated enum:
+/// - [InputProtocol](skrillax_stream::InputProtocol)
+/// - [OutputProtocol](skrillax_stream::OutputProtocol)
+/// - [From], to create the protocol from a variant value
+/// - [TryFrom], to extract a variant value from the protocol
+///
+/// The basic macro invokation looks like this:
+/// ```text
+/// define_protocol! { MyProtocolName =>
+///     MyPacket,
+///     MyOtherPacket
+///     +
+///     MyProtocol
+/// }
+/// ```
+/// This assumes `MyPacket` & `MyOtherPacket` derive [skrillax_packet::Packet]
+/// and `MyProtocol` has also been created using `define_protocol!`.
+///
+/// (!) One limitation of `define_protocol!` is, because it always provides an
+/// implementation for [InputProtocol](skrillax_stream::InputProtocol) &
+/// [OutputProtocol](skrillax_stream::OutputProtocol), it requires all packets
+/// _and_ protocols to be both `Serialize` & `Derserialize`. For some packets,
+/// that may not be possible, for example when there's a zero-length optional
+/// field. Any protocols those packets are included would also automatically not
+/// be both serialize and deserialize and could thus also not be used.
 #[macro_export]
 macro_rules! define_protocol {
     ($name:ident => $($enumValue:ident),*) => {
@@ -121,6 +168,7 @@ macro_rules! define_protocol {
     };
 }
 
+#[doc(hidden)]
 pub mod __internal {
     use skrillax_packet::Packet;
 

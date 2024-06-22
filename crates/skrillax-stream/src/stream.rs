@@ -47,8 +47,11 @@ pub enum InStreamError {
     PacketError(#[from] PacketError),
     #[error("Error when trying to turn frames into packets")]
     ReframingError(#[from] ReframingError),
+    /// The end of the stream was reached, but we expected more data.
     #[error("Reached the end of the stream")]
     EndOfStream,
+    /// When trying to receive a specific packet or protocol, a different or
+    /// unknown packet was received.
     #[error("Received unexpected opcode: {0:#06x}")]
     UnmatchedOpcode(u16),
 }
@@ -82,8 +85,8 @@ impl<T: TryFromPacket + Packet> InputProtocol for T {
 /// Extensions to [TcpStream] to convert it into a silkroad stream, sending
 /// and receiving silkroad packets.
 pub trait SilkroadTcpExt {
-    /// Creates a stream using the existing socket, wrapping it into a stream to read
-    /// and write [IncomingPacket] & [OutgoingPacket].
+    /// Creates a stream using the existing socket, wrapping it into a stream to
+    /// read and write [IncomingPacket] & [OutgoingPacket].
     ///
     /// ```
     /// # use std::error::Error;
@@ -124,8 +127,8 @@ impl SilkroadTcpExt for TcpStream {
 
 /// The writing side of a Silkroad Online connection.
 ///
-/// This is an analog to [OwnedWriteHalf], containing additional state to facilitate
-/// a Silkroad connection, such as encryption.
+/// This is an analog to [OwnedWriteHalf], containing additional state to
+/// facilitate a Silkroad connection, such as encryption.
 pub struct SilkroadStreamWrite<T: AsyncWrite + Unpin> {
     writer: FramedWrite<T, SilkroadCodec>,
     encryption: Option<Arc<SilkroadEncryption>>,
@@ -190,6 +193,10 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
     }
 }
 
+/// The reading side of a Silkroad Online connection.
+///
+/// This is an analog to [OwnedReadHalf], containing additional state to
+/// facilitate a Silkroad connection, such as encryption.
 pub struct SilkroadStreamRead<T: AsyncRead + Unpin> {
     reader: FramedRead<T, SilkroadCodec>,
     encryption: Option<Arc<SilkroadEncryption>>,
@@ -224,26 +231,67 @@ where
         }
     }
 
+    /// Enables encryption for this stream.
+    ///
+    /// Upon starting a connection, a stream will not be encrypted. Only after
+    /// the handshake finished will the encryption be present. This should
+    /// generally be set implicitly by the handshake protocol, but it is
+    /// possible to manually configure it.
+    ///
+    /// An [Arc] is expected here because it is assumed that the same encryption
+    /// will be set on the write half as well.
     pub fn enable_encryption(&mut self, encryption: Arc<SilkroadEncryption>) {
         self.encryption = Some(encryption);
     }
 
+    /// Enables additional security checks for this stream.
+    ///
+    /// In addition to encryption, there are additional security checks
+    /// available on packets. In particular this is the counter and CRC
+    /// checksum.
+    ///
+    /// An [Arc] is expected here because it is assumed that the same encryption
+    /// will be set on the write half as well.
     pub fn enable_security_checks(&mut self, security_bytes: Arc<SecurityBytes>) {
         self.security_bytes = Some(security_bytes);
     }
 
+    /// Provides the currently set encryption configuration, if present.
     pub fn encryption(&self) -> Option<&SilkroadEncryption> {
         self.encryption.as_deref()
     }
 
+    /// Provides the currently set security data, if present.
     pub fn security_bytes(&self) -> Option<&SecurityBytes> {
         self.security_bytes.as_deref()
     }
 
+    /// Provides the security context present for the reader.
+    ///
+    /// This will always return a new context with the
+    /// [SilkroadStreamRead::encryption] and
+    /// [SilkroadStreamRead::security_bytes] data inside. Essentially, this
+    /// is a convenience wrapper around those functions to provide
+    /// a single struct that can be passed around.
     pub fn security_context(&self) -> SecurityContext {
         SecurityContext::new(self.encryption(), self.security_bytes())
     }
 
+    /// Read next packet and handle re-framing.
+    ///
+    /// [skrillax_codec] deals on single packets (i.e. frames) and some packets
+    /// may span multiple frames. It does not attempt to collect those
+    /// frames where appropriate and instead pushes the problem up the
+    /// abstraction chain. Thus, at the current abstraction level we're
+    /// performing this merging of frames into logical packets. Thus, it is
+    /// possible the resulting [IncomingPacket] is actually a massive packet
+    /// containing multiple operations inside it. At this point we can't
+    /// split that into the individual operations, because we don't know the
+    /// length of those operations.
+    ///
+    /// This should only be necessary if you're not interested in actual packet
+    /// data or work really generically. Otherwise,
+    /// [SilkroadStreamRead::next_packet] should be used instead.
     pub async fn next(&mut self) -> Result<IncomingPacket, InStreamError> {
         let mut buffer = Vec::new();
         let mut remaining = 1usize;
@@ -272,6 +320,10 @@ where
     /// protocol. We expect that all packets are part of the given protocol,
     /// otherwise it will be _discarded_ and [InStreamError::UnmatchedOpcode]
     /// will be returned.
+    ///
+    /// Since [InputProtocol] is automatically derived for structs that have
+    /// [skrillax_packet::Packet] & [skrillax_serde::Deserialize], you can
+    /// both expect a single packet and a full protocol here.
     pub async fn next_packet<S: InputProtocol>(&mut self) -> Result<S, InStreamError> {
         let (opcode, mut buffer) = match self.unconsumed.take() {
             Some(inner) => inner,
