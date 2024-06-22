@@ -189,7 +189,9 @@ fn generate_for_variant(ident: &Ident, variant: &Variant, size: usize) -> TokenS
     let attributes = FieldArgs::from_attributes(&variant.attrs).unwrap();
     let variant_name = &variant.ident;
     let value_output = if size > 0 {
-        let value = attributes.value.expect("When size is not zero, value should be set.");
+        let value = attributes
+            .value
+            .expect("When size is not zero, value should be set.");
         let value = get_variant_value(variant_name, value, size);
         quote_spanned! { variant_name.span() =>
             #value.write_to(writer);

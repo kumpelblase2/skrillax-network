@@ -1,5 +1,6 @@
-//! This crate mainly provides one trait: [Packet]. While you can implement it yourself,
-//! you might as well use the derive macro to derive it instead (which requires the `derive` feature).
+//! This crate mainly provides one trait: [Packet]. While you can implement it
+//! yourself, you might as well use the derive macro to derive it instead (which
+//! requires the `derive` feature).
 //! ```
 //! # #[cfg(feature = "derive")]
 //! # {
@@ -7,30 +8,37 @@
 //! #[derive(Packet)]
 //! #[packet(opcode = 0x5001)]
 //! struct MyPacket {
-//!     content: String
+//!     content: String,
 //! }
 //! # }
 //! ```
 //!
-//! The rest of this crate focuses around converting a [Packet] into a [SilkroadFrame], or vice-versa.
-//! This currently takes a small detour through using either an [IncomingPacket] or [OutgoingPacket],
-//! depending on the direction. This is done because we often first need to apply some kind of
-//! transformation to the frames, before we can easily turn them into structs representing the
-//! packet. This would include combining multiple massive frames into one large buffer as well as
-//! decrypting the content of frames to figure out their opcodes. Thus, the chain goes something
-//! like this, in a simplified way.
-//! To turn a packet into frames: `myPacket.serialize().as_frames(context)`
-//! To turn frames into a packet: `IncomingPacket::from_frames(frames, context).try_into_packet::<MyPacket>()`
+//! The rest of this crate focuses around converting a [Packet] into a
+//! [SilkroadFrame], or vice-versa. This currently takes a small detour through
+//! using either an [IncomingPacket] or [OutgoingPacket], depending on the
+//! direction. This is done because we often first need to apply some kind of
+//! transformation to the frames, before we can easily turn them into structs
+//! representing the packet. This would include combining multiple massive
+//! frames into one large buffer as well as decrypting the content of frames to
+//! figure out their opcodes. Thus, the chain goes something like this, in a
+//! simplified way. To turn a packet into frames:
+//! `myPacket.serialize().as_frames(context)` To turn frames into a packet:
+//! `IncomingPacket::from_frames(frames, context).try_into_packet::<MyPacket>()`
 //!
-//! However, this does require a bit more than just the [Packet] implementation. Either you need to
-//! implement the [TryFromPacket] and [TryIntoPacket] traits yourself, or you need to implement/derive
-//! [Serialize], [Deserialize], and [ByteSize] from the [skrillax_serde] crate. With these, [TryIntoPacket]
-//! and [TryFromPacket] are automatically implemented for you. They are necessary to
-//! serialize/deserialize the packet content into bytes, which can be sent using the frames.
+//! However, this does require a bit more than just the [Packet] implementation.
+//! Either you need to implement the [TryFromPacket] and [TryIntoPacket] traits
+//! yourself, or you need to implement/derive [skrillax_serde::Serialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Serialize.html),
+//! [skrillax_serde::Deserialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Deserialize.html),
+//! and [skrillax_serde::ByteSize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.ByteSize.html)
+//! from the [skrillax_serde](https://docs.rs/skrillax-serde/latest/skrillax_serde/) crate.
+//! With these, [TryIntoPacket] and [TryFromPacket] are automatically
+//! implemented for you. They are necessary to serialize/deserialize the packet
+//! content into bytes, which can be sent using the frames.
 //!
 //! ## Derive
 //!
-//! The derive macro currently has three options, for all the options the trait provides:
+//! The derive macro currently has three options, for all the options the trait
+//! provides:
 //! ```
 //! # #[cfg(feature = "derive")]
 //! # {
@@ -38,13 +46,13 @@
 //! #[derive(Packet)]
 //! #[packet(opcode = 0x5001, encrypted = true, massive = false)]
 //! struct MyPacket {
-//!     content: String
+//!     content: String,
 //! }
 //! # }
 //! ```
-//! `encrypted` and `massive` are `false` by default and are mutually exclusive. `opcode` is a
-//! required attribute, this is also considered the `ID` of a packet. The name is automatically
-//! considered to be the structure's name.
+//! `encrypted` and `massive` are `false` by default and are mutually exclusive.
+//! `opcode` is a required attribute, this is also considered the `ID` of a
+//! packet. The name is automatically considered to be the structure's name.
 
 use bytes::{BufMut, Bytes, BytesMut};
 use skrillax_codec::SilkroadFrame;
@@ -60,35 +68,40 @@ use skrillax_serde::{ByteSize, Deserialize, SerializationError, Serialize};
 
 #[derive(Error, Debug)]
 pub enum PacketError {
-    #[error("The packet cannot be serialized")]
-    NonSerializable,
     #[cfg(feature = "serde")]
     #[error("An error occurred while trying to (de)serialize the packet")]
     SerializationError(#[from] SerializationError),
-    #[error("An encrypted packet was either attempted to be sent or received, but no security has been established yet")]
+    #[error(
+        "An encrypted packet was either attempted to be sent or received, but no security has \
+         been established yet"
+    )]
     MissingSecurity,
 }
 
-/// Defines associated constants with this packet, which can be used to turn this struct into a
-/// packet.
+/// Defines associated constants with this packet, which can be used to turn
+/// this struct into a packet.
 ///
-/// If this struct also implements [ByteSize] and [Serialize], it will automatically gain
-/// [TryIntoPacket]. If it implements [Deserialize], it will automatically gain [TryFromPacket].
+/// If this struct also implements [skrillax_serde::ByteSize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.ByteSize.html)
+/// and [skrillax_serde::Serialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Serialize.html),
+/// it will automatically gain [TryIntoPacket]. If it implements
+/// [skrillax_serde::Deserialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Deserialize.html), it will automatically gain [TryFromPacket].
 /// This can automatically be derived with the `derive` feature.
 pub trait Packet: Sized {
     /// Defines the ID or OpCode of the packet.
     const ID: u16;
-    /// Provides a more readable name for the given packet. This is usually just the struct name.
+    /// Provides a more readable name for the given packet. This is usually just
+    /// the struct name.
     const NAME: &'static str;
-    /// Defines if this packet is a massive packet, and should thus use massive frames for transport.
+    /// Defines if this packet is a massive packet, and should thus use massive
+    /// frames for transport.
     const MASSIVE: bool;
     /// Defines if this packet is an encrypted packet.
     const ENCRYPTED: bool;
 }
 
-/// An incoming packet that has already gone through re-framing of massive packets
-/// or decryption. It is essentially a collection of bytes for a given opcode,
-/// nothing more.
+/// An incoming packet that has already gone through re-framing of massive
+/// packets or decryption. It is essentially a collection of bytes for a given
+/// opcode, nothing more.
 #[derive(Eq, PartialEq, Debug)]
 pub struct IncomingPacket {
     opcode: u16,
@@ -127,16 +140,18 @@ pub enum OutgoingPacket {
     Encrypted { opcode: u16, data: Bytes },
     /// A basic packet that doesn't need any additional transformation.
     Simple { opcode: u16, data: Bytes },
-    /// A massive packet containing multiple inner packets that should be sent together.
+    /// A massive packet containing multiple inner packets that should be sent
+    /// together.
     Massive { opcode: u16, packets: Vec<Bytes> },
 }
 
-/// Defines _something_ that can be turned into a packet, which then can be sent out.
+/// Defines _something_ that can be turned into a packet, which then can be sent
+/// out.
 ///
-/// Generally, this will be either a single struct representing a single operation, or
-/// a 'protocol' enum containing a list of multiple packets. For convenience, this
-/// trait has a blanket implementation for everything which already implements
-/// [Packet] and [Deserialize].
+/// Generally, this will be either a single struct representing a single
+/// operation, or a 'protocol' enum containing a list of multiple packets. For
+/// convenience, this trait has a blanket implementation for everything which
+/// already implements [Packet] and [Deserialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Deserialize.html).
 ///
 /// The analog is [TryFromPacket].
 pub trait TryIntoPacket {
@@ -144,21 +159,22 @@ pub trait TryIntoPacket {
     fn serialize(&self) -> OutgoingPacket;
 }
 
-/// Defines _something_ that can be created from a packet, after it has been received.
+/// Defines _something_ that can be created from a packet, after it has been
+/// received.
 ///
-/// Once a re-framing, decryption and other parts have completed, we want to turn the
-/// contained data into a usable structure.
+/// Once a re-framing, decryption and other parts have completed, we want to
+/// turn the contained data into a usable structure.
 ///
 /// The analog is [TryIntoPacket].
 pub trait TryFromPacket: Sized {
-    /// Tries to create `Self` from the given data. Unlike [TryIntoPacket], we do not deal
-    /// with the opcode here. It is expected that we have already matched the opcode to
-    /// `Self` and know it matches.
+    /// Tries to create `Self` from the given data. Unlike [TryIntoPacket], we
+    /// do not deal with the opcode here. It is expected that we have
+    /// already matched the opcode to `Self` and know it matches.
     ///
-    /// `data` _may_ contain more data than necessary to form a single packet, for example
-    /// if we were inside a massive frame. Thus, we need to return the amount of consumed
-    /// bytes such that the remainder may be used to create more elements of `Self` if the
-    /// caller wants to.
+    /// `data` _may_ contain more data than necessary to form a single packet,
+    /// for example if we were inside a massive frame. Thus, we need to
+    /// return the amount of consumed bytes such that the remainder may be
+    /// used to create more elements of `Self` if the caller wants to.
     fn try_deserialize(data: &[u8]) -> Result<(usize, Self), PacketError>;
 }
 
@@ -219,10 +235,11 @@ pub enum FramingError {
     MissingEncryption,
 }
 
-/// A procedure to turn an element into actual [skrillax_codec::SilkroadFrame]s, which can
-/// be written by the codec onto the wire.
+/// A procedure to turn an element into actual [SilkroadFrame]s,
+/// which can be written by the codec onto the wire.
 pub trait AsFrames {
-    /// Creates a collection of [skrillax_codec::SilkroadFrame] that represent the given structure.
+    /// Creates a collection of [SilkroadFrame] that represent
+    /// the given structure.
     ///
     /// This is mostly a 1-to-1 mapping between output packet
     /// kinds and their respective frames. Since frames may be encrypted,
@@ -272,7 +289,7 @@ impl AsFrames for OutgoingPacket {
                     content_size: data.len(),
                     encrypted_data: new_buffer.freeze(),
                 }])
-            }
+            },
             OutgoingPacket::Simple { opcode, data } => {
                 let crc = if let Some(mut checksum_builder) = context
                     .checkers()
@@ -294,7 +311,7 @@ impl AsFrames for OutgoingPacket {
                     opcode: *opcode,
                     data: data.clone(),
                 }])
-            }
+            },
             OutgoingPacket::Massive { opcode, packets } => {
                 let mut frames = Vec::with_capacity(1 + packets.len());
 
@@ -350,7 +367,7 @@ impl AsFrames for OutgoingPacket {
                 }
 
                 Ok(frames)
-            }
+            },
         }
     }
 }
@@ -377,12 +394,15 @@ pub enum ReframingError {
 pub trait FromFrames: Sized {
     /// Try to turn _all_ frames into an incoming packet.
     ///
-    /// This accepts a slice of frames, which is either a single packet frame (plain or encrypted),
-    /// or multiple frames representing a massive packet. As such, this function does not return how
-    /// many frames may have been consumed, as it is expected to have consumed all the given frames.
+    /// This accepts a slice of frames, which is either a single packet frame
+    /// (plain or encrypted), or multiple frames representing a massive
+    /// packet. As such, this function does not return how many frames may
+    /// have been consumed, as it is expected to have consumed all the given
+    /// frames.
     ///
-    /// It requires a security context such that it may validate and decrypt frames, when the need
-    /// arises. If no security is provided but an encrypted frame is encountered, it will error.
+    /// It requires a security context such that it may validate and decrypt
+    /// frames, when the need arises. If no security is provided but an
+    /// encrypted frame is encountered, it will error.
     fn from_frames(
         frames: &[SilkroadFrame],
         security: SecurityContext,
@@ -407,7 +427,7 @@ impl FromFrames for IncomingPacket {
                     if massive_information.is_some() =>
                 {
                     return Err(ReframingError::MixedFrames);
-                }
+                },
                 SilkroadFrame::Packet {
                     opcode,
                     data,
@@ -439,7 +459,7 @@ impl FromFrames for IncomingPacket {
                     }
 
                     return Ok(IncomingPacket::new(*opcode, data.clone()));
-                }
+                },
                 SilkroadFrame::Encrypted {
                     encrypted_data,
                     content_size,
@@ -485,10 +505,10 @@ impl FromFrames for IncomingPacket {
                                 }
                             }
                             Ok(IncomingPacket::new(opcode, data))
-                        }
+                        },
                         _ => Err(ReframingError::InvalidEncryptedData),
                     };
-                }
+                },
                 SilkroadFrame::MassiveHeader {
                     contained_count,
                     contained_opcode,
@@ -531,7 +551,7 @@ impl FromFrames for IncomingPacket {
                         opcode: *contained_opcode,
                         remaining: *contained_count,
                     });
-                }
+                },
                 SilkroadFrame::MassiveContainer { inner, count, crc } => {
                     if let Some(mut massive) = massive_information.take() {
                         let mut current_buffer = massive_buffer.take().unwrap_or_default();
@@ -576,7 +596,7 @@ impl FromFrames for IncomingPacket {
                     } else {
                         return Err(ReframingError::StrayMassiveContainer);
                     }
-                }
+                },
             }
         }
 
@@ -602,8 +622,10 @@ impl SecurityBytes {
 
     /// Generate the next count byte.
     ///
-    /// A count byte is used to avoid replay attacks, used to determine a continuous flow of the data. If a packet is
-    /// dropped, or another injected, this will no longer match. It is essentially a seeded RNG number.
+    /// A count byte is used to avoid replay attacks, used to determine a
+    /// continuous flow of the data. If a packet is dropped, or another
+    /// injected, this will no longer match. It is essentially a seeded RNG
+    /// number.
     pub fn generate_count_byte(&self) -> u8 {
         self.counter
             .lock()
@@ -620,8 +642,8 @@ impl SecurityBytes {
     }
 }
 
-// Technically, this is not the right place. But due to the orphan rule, it's the most suitable
-// place.
+// Technically, this is not the right place. But due to the orphan rule, it's
+// the most suitable place.
 impl From<CheckBytesInitialization> for SecurityBytes {
     fn from(value: CheckBytesInitialization) -> Self {
         SecurityBytes::from_seeds(value.crc_seed, value.count_seed)
@@ -630,12 +652,13 @@ impl From<CheckBytesInitialization> for SecurityBytes {
 
 /// Provides a complete security context to handle packets.
 ///
-/// To properly handle all security features of a Silkroad Online packet, you may need all three
-/// elements: [SilkroadEncryption], [MessageCounter], and [Checksum]. However, it is possible for
-/// either the [SilkroadEncryption] to be absent and/or both [MessageCounter] and [Checksum] to be
-/// absent. Thus, [MessageCounter] and [Checksum] are tied together. This struct does not really
-/// provide much in and of itself, but it is handy as it might be used in different layers in the
-/// stack to refer to.
+/// To properly handle all security features of a Silkroad Online packet, you
+/// may need all three elements: [SilkroadEncryption], [MessageCounter], and
+/// [Checksum]. However, it is possible for either the [SilkroadEncryption] to
+/// be absent and/or both [MessageCounter] and [Checksum] to be absent. Thus,
+/// [MessageCounter] and [Checksum] are tied together. This struct does not
+/// really provide much in and of itself, but it is handy as it might be used in
+/// different layers in the stack to refer to.
 #[derive(Default)]
 pub struct SecurityContext<'a> {
     encryption: Option<&'a SilkroadEncryption>,

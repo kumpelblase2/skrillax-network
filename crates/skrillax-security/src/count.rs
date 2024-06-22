@@ -15,9 +15,10 @@ fn generate_value(mut value: u32) -> u32 {
 
 /// A cryptographic counter for verifying message order.
 ///
-/// To verify that messages arrive in the correct order and aren't reused at a later time, you can
-/// use a cryptographic counter. It is essentially a PRNG that always returns a single byte.
-/// Similarly to a PRNG, we need to provide a seed before we can generate values.
+/// To verify that messages arrive in the correct order and aren't reused at a
+/// later time, you can use a cryptographic counter. It is essentially a PRNG
+/// that always returns a single byte. Similarly to a PRNG, we need to provide a
+/// seed before we can generate values.
 ///
 /// ```
 /// # use rand::random;
@@ -51,8 +52,8 @@ impl MessageCounter {
 
     /// Generates the next byte of the counter.
     ///
-    /// Generates the next byte by advancing the internal state according to the generation
-    /// algorithm.
+    /// Generates the next byte by advancing the internal state according to the
+    /// generation algorithm.
     pub fn next_byte(&mut self) -> u8 {
         let value = (self.seeds[2] as u32 * (!self.seeds[0] as u32 + self.seeds[1] as u32)) as u8;
         self.seeds[0] = value ^ value >> 4;

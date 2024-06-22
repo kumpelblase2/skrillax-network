@@ -1,33 +1,37 @@
-//! The handshake module provides both sides of the handshake used to establish the security
-//! features of a connection between two Silkroad Online participants, usually a server and a
-//! client.
+//! The handshake module provides both sides of the handshake used to establish
+//! the security features of a connection between two Silkroad Online
+//! participants, usually a server and a client.
 //!
-//! The handshake always happens between an active and a passive party. The active party initiates
-//! the handshake and determines what features shall be used. The passive party essentially always
-//! accepts what is provided by the active party. This handshake how it is implemented here does not
-//! concern itself with actually exchanging the information. How that is done is up to the user of
-//! this api, and they might choose whatever makes sense in the given situation. You might also
-//! choose to use the [skrillax-stream](https://docs.rs/skrillax-stream) crate instead to handle the
+//! The handshake always happens between an active and a passive party. The
+//! active party initiates the handshake and determines what features shall be
+//! used. The passive party essentially always accepts what is provided by the
+//! active party. This handshake how it is implemented here does not
+//! concern itself with actually exchanging the information. How that is done is
+//! up to the user of this api, and they might choose whatever makes sense in
+//! the given situation. You might also choose to use the [skrillax-stream](https://docs.rs/skrillax-stream) crate instead to handle the
 //! handshake for you in an async fashion.
 //!
-//! Generally, the active party is a server, while the passive party is a client. This at least
-//! holds true for the official Silkroad Online. Thus, if you want to interface or emulate it, you
-//! want to keep these roles. In any other situation, you may choose a different role assignment.
+//! Generally, the active party is a server, while the passive party is a
+//! client. This at least holds true for the official Silkroad Online. Thus, if
+//! you want to interface or emulate it, you want to keep these roles. In any
+//! other situation, you may choose a different role assignment.
 //!
 //! The handshake of Silkroad Online is similar to a [Diffie–Hellman key exchange](https://en.wikipedia.org/wiki/Diffie%E2%80%93Hellman_key_exchange);
-//! Each party generates a private key (or something like a key). Then they perform an operation
-//! on the private key and share the resulting value. Using the shared value and performing the same
-//! operation using their original private key, they can generate a shared secret without having to
-//! ever share their private key. I say similar to, because the implementation Silkroad Online uses
-//! is a little weaker, as it's pretty easy to brute force, which I have shown in my [decryptor](https://github.com/kumpelblase2/skrillax/tree/master/silkroad-packet-decryptor#why-it-works).
-//! After the shared secret has been established, it is used as the key material for a blowfish
-//! cipher.
+//! Each party generates a private key (or something like a key). Then they
+//! perform an operation on the private key and share the resulting value. Using
+//! the shared value and performing the same operation using their original
+//! private key, they can generate a shared secret without having to ever share
+//! their private key. I say similar to, because the implementation Silkroad
+//! Online uses is a little weaker, as it's pretty easy to brute force, which I have shown in my [decryptor](https://github.com/kumpelblase2/skrillax/tree/master/silkroad-packet-decryptor#why-it-works).
+//! After the shared secret has been established, it is used as the key material
+//! for a blowfish cipher.
 //!
-//! Most of the internals are abstracted away in this implementation. If you're looking for a more
-//! in-depth overview of how the handshake works, you may want to look at the ['Silkroad Doc'](https://github.com/DummkopfOfHachtenduden/SilkroadDoc/wiki/silkroad-security).
+//! Most of the internals are abstracted away in this implementation. If you're
+//! looking for a more in-depth overview of how the handshake works, you may want to look at the ['Silkroad Doc'](https://github.com/DummkopfOfHachtenduden/SilkroadDoc/wiki/silkroad-security).
 //!
-//! Depending on which party you're assuming, you either want to use the [ActiveHandshake], or
-//! [PassiveHandshake] if you're assumed to be the active party or passive party respectively.
+//! Depending on which party you're assuming, you either want to use the
+//! [ActiveHandshake], or [PassiveHandshake] if you're assumed to be the active
+//! party or passive party respectively.
 
 use crate::{blowfish_from_int, BlowfishBlock, SilkroadEncryption, SilkroadSecurityError};
 use bitflags::bitflags;
@@ -94,30 +98,38 @@ pub struct PassiveInitializationData {
 
 /// Provides the active part of a handshake.
 ///
-/// The active part of the handshake initializes the handshake procedure. It will generate the
-/// necessary initialization data and provide the passive part with a challenge, before it will
-/// complete the handshake. Generally, you're expected to transfer the returned data to the other
-/// side by whatever means appropriate. Depending on the security features that you want, you can
-/// decide to end the handshake early. However, the following will assume you want all security
-/// features enabled.
+/// The active part of the handshake initializes the handshake procedure. It
+/// will generate the necessary initialization data and provide the passive part
+/// with a challenge, before it will complete the handshake. Generally, you're
+/// expected to transfer the returned data to the other side by whatever means
+/// appropriate. Depending on the security features that you want, you can
+/// decide to end the handshake early. However, the following will assume you
+/// want all security features enabled.
 ///
 /// An example procedure would be as follows:
 /// ```
 /// # use skrillax_security::{ActiveHandshake, PassiveHandshake, SecurityFeature};
 /// let mut handshake = ActiveHandshake::default();
-/// let init = handshake.initialize(SecurityFeature::all()).expect("Should be able to initialize handshake.");
+/// let init = handshake
+///     .initialize(SecurityFeature::all())
+///     .expect("Should be able to initialize handshake.");
 /// # let mut passive = PassiveHandshake::default();
 /// // You should now transfer the data contained in `init` to the other side.
 /// // The other side would then give you their public part of their side. With that, you can
 /// // generate a challenge.
 /// # let (value_key, value_b) = passive.initialize(init.encryption_seed).unwrap().unwrap();
 /// // You should get `value_b` & `value_key` from the passive side of the handshake.
-/// let challenge = handshake.start_challenge(value_b, value_key).expect("Should be able to start the challenge.");
+/// let challenge = handshake
+///     .start_challenge(value_b, value_key)
+///     .expect("Should be able to start the challenge.");
 /// // This challenge should again be transferred to the other side. At this point the handshake it
 /// // technically complete; all data has been exchanged. However, we should wait for the passive
 /// // side to acknowledge the challenge.
 /// # passive.finish(challenge).unwrap();
-/// let encryption = handshake.finish().expect("Should have finished handshake.").expect("Encryption should've been established.");
+/// let encryption = handshake
+///     .finish()
+///     .expect("Should have finished handshake.")
+///     .expect("Encryption should've been established.");
 /// ```
 #[derive(Default)]
 pub struct ActiveHandshake {
@@ -128,12 +140,15 @@ pub struct ActiveHandshake {
 impl ActiveHandshake {
     /// Starts the handshake process.
     ///
-    /// This generates the private key parts and returns [PassiveInitializationData], which
-    /// should be transferred to the client. This should later be followed by calling
-    /// [start_challenge()][Self::start_challenge()] with the client response. The content of the
-    /// [PassiveInitializationData] may vary depending on the configured security features.
+    /// This generates the private key parts and returns
+    /// [PassiveInitializationData], which should be transferred to the
+    /// client. This should later be followed by calling
+    /// [start_challenge()][Self::start_challenge()] with the client response.
+    /// The content of the [PassiveInitializationData] may vary depending on
+    /// the configured security features.
     ///
-    /// If a handshake has already been started or completed, will return [SilkroadSecurityError::AlreadyInitialized].
+    /// If a handshake has already been started or completed, will return
+    /// [SilkroadSecurityError::AlreadyInitialized].
     pub fn initialize(
         &mut self,
         features: SecurityFeature,
@@ -188,9 +203,9 @@ impl ActiveHandshake {
     }
 
     /// Initialize the security with a predefined set of values.
-    /// These are the same values that would be generated randomly in [initialize()].
-    /// This effectively does the initialization, just with the predefined values,
-    /// resulting in a deterministic handshake.
+    /// These are the same values that would be generated randomly in
+    /// [initialize()]. This effectively does the initialization, just with
+    /// the predefined values, resulting in a deterministic handshake.
     #[allow(unused)]
     fn initialize_with(&mut self, encryption_data: Option<ActiveEncryptionData>) {
         self.state = ActiveHandshakeState::HandshakeStarted {
@@ -200,13 +215,16 @@ impl ActiveHandshake {
 
     /// Create a challenge to the client.
     ///
-    /// This creates a challenge for the client, signaling a switch to an encrypted channel using the exchanged key
-    /// material. We also check if the key, that the client sent us, matches what we would expect given what we've
-    /// witnessed in the key exchange.
+    /// This creates a challenge for the client, signaling a switch to an
+    /// encrypted channel using the exchanged key material. We also check if
+    /// the key, that the client sent us, matches what we would expect given
+    /// what we've witnessed in the key exchange.
     ///
-    /// If successful, returns the challenge for the client. If [initialize][Self::initialize()] hasn't been called,
-    /// returns [SilkroadSecurityError::SecurityUninitialized]. If the passed key does not match the key we expected,
-    /// will return [SilkroadSecurityError::KeyExchangeMismatch].
+    /// If successful, returns the challenge for the client. If
+    /// [initialize][Self::initialize()] hasn't been called,
+    /// returns [SilkroadSecurityError::SecurityUninitialized]. If the passed
+    /// key does not match the key we expected, will return
+    /// [SilkroadSecurityError::KeyExchangeMismatch].
     pub fn start_challenge(
         &mut self,
         value_b: u32,
@@ -267,23 +285,23 @@ impl ActiveHandshake {
 
     /// Finishes the handshake process.
     ///
-    /// This will try to finish the handshake process, at whatever stage we are. Depending on the
-    /// configured settings, this may be at different stages.
-    /// If no security features are configured: at any point.
+    /// This will try to finish the handshake process, at whatever stage we are.
+    /// Depending on the configured settings, this may be at different
+    /// stages. If no security features are configured: at any point.
     /// If only check bytes are configured: after initialization.
     /// If encryption is configured: after having created the client challenge.
     pub fn finish(self) -> Result<Option<SilkroadEncryption>, SilkroadSecurityError> {
         match self.state {
             ActiveHandshakeState::Challenged { blowfish } => {
                 Ok(Some(SilkroadEncryption { blowfish }))
-            }
+            },
             ActiveHandshakeState::Uninitialized if self.features.is_empty() => Ok(None),
             ActiveHandshakeState::FinishedEmpty => Ok(None),
             ActiveHandshakeState::HandshakeStarted { encryption_seed }
                 if encryption_seed.is_none() =>
             {
                 Ok(None)
-            }
+            },
             _ => Err(SilkroadSecurityError::InitializationUnfinished),
         }
     }
@@ -311,10 +329,11 @@ enum PassiveHandshakeState {
 
 /// Provides the passive part of the handshake.
 ///
-/// The passive part of the handshake only really responds to the stuff the active part tells it.
-/// This includes the enabled features, which cannot be configured here but will be part of the
-/// setup sent from the active part. We're currently expecting the other side to initialize a
-/// handshake, but this is technically not required. How you deal with that is up to you.
+/// The passive part of the handshake only really responds to the stuff the
+/// active part tells it. This includes the enabled features, which cannot be
+/// configured here but will be part of the setup sent from the active part.
+/// We're currently expecting the other side to initialize a handshake, but this
+/// is technically not required. How you deal with that is up to you.
 ///
 /// An example exchange could look like this:
 /// ```
@@ -343,15 +362,18 @@ pub struct PassiveHandshake {
 impl PassiveHandshake {
     /// Initialize the handshake with the data from the active side.
     ///
-    /// We have received the initialization data from the active handshake side and want to
-    /// initialize our side as well. Depending on the security features selected by the active side,
-    /// the initialization data may actually be `None`, which is why this accepts and [Option].
-    /// Technically, if you haven't received any encryption initialization data, you can simply call
-    /// [PassiveHandshake::done] and complete the handshake - there's nothing more to be exchanged.
-    /// This is essentially a convenience to stay more consistent with what we receive from the
-    /// active part.
+    /// We have received the initialization data from the active handshake side
+    /// and want to initialize our side as well. Depending on the security
+    /// features selected by the active side, the initialization data may
+    /// actually be `None`, which is why this accepts and [Option].
+    /// Technically, if you haven't received any encryption initialization data,
+    /// you can simply call [PassiveHandshake::done] and complete the
+    /// handshake - there's nothing more to be exchanged.
+    /// This is essentially a convenience to stay more consistent with what we
+    /// receive from the active part.
     ///
-    /// This may error if we're already initialized, returning [SilkroadSecurityError::InitializationUnfinished].
+    /// This may error if we're already initialized, returning
+    /// [SilkroadSecurityError::InitializationUnfinished].
     pub fn initialize(
         &mut self,
         init: Option<PassiveEncryptionInitializationData>,
@@ -404,11 +426,12 @@ impl PassiveHandshake {
 
     /// Complete the handshake by verifying the challenge.
     ///
-    /// After we have sent our initialization data to the active part, they provide us with a sort
-    /// of challenge. If we can verify the challenge with what we internally calculated, we know the
-    /// key exchange was successful, and we now have a shared secret. At this point, the handshake
-    /// is essentially completed. This should be signaled to the active side by switching to an
-    /// encrypted channel.
+    /// After we have sent our initialization data to the active part, they
+    /// provide us with a sort of challenge. If we can verify the challenge
+    /// with what we internally calculated, we know the key exchange was
+    /// successful, and we now have a shared secret. At this point, the
+    /// handshake is essentially completed. This should be signaled to the
+    /// active side by switching to an encrypted channel.
     pub fn finish(&mut self, challenge: u64) -> Result<(), SilkroadSecurityError> {
         let PassiveHandshakeState::AuthStarted {
             encryption_seed: Some(ref encryption_data),
@@ -448,20 +471,20 @@ impl PassiveHandshake {
 
     /// Return the resulting encryption from the handshake.
     ///
-    /// If the selected security features of the active handshake part included setting up the
-    /// encryption, the final result will be returned. If it didn't contain that feature, it will
-    /// return `None` instead.
+    /// If the selected security features of the active handshake part included
+    /// setting up the encryption, the final result will be returned. If it
+    /// didn't contain that feature, it will return `None` instead.
     ///
-    /// Will return [SilkroadSecurityError::InitializationUnfinished] if we haven't completed the
-    /// handshake yet.
+    /// Will return [SilkroadSecurityError::InitializationUnfinished] if we
+    /// haven't completed the handshake yet.
     pub fn done(self) -> Result<Option<SilkroadEncryption>, SilkroadSecurityError> {
         match self.state {
             PassiveHandshakeState::AuthStarted { encryption_seed } if encryption_seed.is_some() => {
                 Err(SilkroadSecurityError::InitializationUnfinished)
-            }
+            },
             PassiveHandshakeState::Challenging { blowfish } => {
                 Ok(Some(SilkroadEncryption { blowfish }))
-            }
+            },
             _ => Ok(None),
         }
     }

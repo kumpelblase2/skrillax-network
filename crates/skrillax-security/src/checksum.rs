@@ -67,9 +67,10 @@ static EXPANDED_TABLE: OnceLock<[u32; 256 * 256]> = OnceLock::new();
 
 /// Generates a CRC checksum according to the algorithm used in Silkroad Online.
 ///
-/// Just like a hash, given the same input (seed & data), it will produce the same output. The seed
-/// is expected to be generated randomly and exchanged prior. Then the output can be used to ensure
-/// no accidental changes have been made to the data.
+/// Just like a hash, given the same input (seed & data), it will produce the
+/// same output. The seed is expected to be generated randomly and exchanged
+/// prior. Then the output can be used to ensure no accidental changes have been
+/// made to the data.
 ///
 /// ```
 /// # use rand::random;
@@ -78,11 +79,12 @@ static EXPANDED_TABLE: OnceLock<[u32; 256 * 256]> = OnceLock::new();
 /// let crc = checksum.generate_byte(&[0x01, 0x02]);
 /// ```
 ///
-/// While the `seed` is considered a `u32`, only the lower 8 bits are actually used; any other will
-/// be discarded. Technically, it would be more correct for this seed to accept a `u8` instead to
-/// ensure this on a type level. However, we're keeping it as a `u32` because inside the silkroad
-/// packets the seed occupies a `u32`. We want to keep this in sync. For now, the following is thus
-/// correct:
+/// While the `seed` is considered a `u32`, only the lower 8 bits are actually
+/// used; any other will be discarded. Technically, it would be more correct for
+/// this seed to accept a `u8` instead to ensure this on a type level. However,
+/// we're keeping it as a `u32` because inside the silkroad packets the seed
+/// occupies a `u32`. We want to keep this in sync. For now, the following is
+/// thus correct:
 /// ```
 /// # use skrillax_security::Checksum;
 /// let checksum = Checksum::new(10 + 256);
@@ -115,16 +117,21 @@ impl Checksum {
 
 /// A builder to update the digest of the checksum incrementally.
 ///
-/// Sometimes we don't have a continuous buffer for creating a checksum, so calling
-/// [Checksum::generate_byte] would require us to allocate a completely new buffer. Since we're not
-/// actually storing much data for calculating the checksum, it might be better to instead build up
-/// the checksum in individual steps.
+/// Sometimes we don't have a continuous buffer for creating a checksum, so
+/// calling [Checksum::generate_byte] would require us to allocate a completely
+/// new buffer. Since we're not actually storing much data for calculating the
+/// checksum, it might be better to instead build up the checksum in individual
+/// steps.
 ///
 /// ```
 /// # use skrillax_security::Checksum;
 /// let checksum = Checksum::new(0);
 /// let mut builder = checksum.builder();
-/// let crc = builder.update(&[0x01, 0x01]).update_byte(1).update(&[0x05]).digest();
+/// let crc = builder
+///     .update(&[0x01, 0x01])
+///     .update_byte(1)
+///     .update(&[0x05])
+///     .digest();
 /// ```
 pub struct ChecksumBuilder<'a> {
     seed: u32,

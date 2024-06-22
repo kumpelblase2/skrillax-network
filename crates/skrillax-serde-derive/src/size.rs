@@ -21,7 +21,7 @@ pub(crate) fn size(ident: &Ident, data: &Data, args: SilkroadArgs) -> TokenStrea
                 quote_spanned! { ident.span() =>
                     #(#content)+*
                 }
-            }
+            },
             Fields::Unnamed(unnamed) => {
                 let content = unnamed.unnamed.iter().enumerate().map(|(i, field)| {
                     let ident = Index::from(i);
@@ -30,10 +30,10 @@ pub(crate) fn size(ident: &Ident, data: &Data, args: SilkroadArgs) -> TokenStrea
                 quote_spanned! { ident.span() =>
                     #(#content)+*
                 }
-            }
+            },
             Fields::Unit => {
                 quote!(0)
-            }
+            },
         },
         Data::Enum(ref enum_data) => {
             let arms = enum_data.variants.iter().map(|variant| {
@@ -56,7 +56,7 @@ pub(crate) fn size(ident: &Ident, data: &Data, args: SilkroadArgs) -> TokenStrea
                                 #(#content)+*
                             }
                         }
-                    }
+                    },
                     Fields::Unnamed(unnamed) => {
                         let idents = (0..unnamed.unnamed.len())
                             .map(|i| format_ident!("t{}", i))
@@ -72,12 +72,12 @@ pub(crate) fn size(ident: &Ident, data: &Data, args: SilkroadArgs) -> TokenStrea
                                 #(#content)+*
                             }
                         }
-                    }
+                    },
                     Fields::Unit => {
                         quote_spanned! { name.span() =>
                             #ident::#name => 0
                         }
-                    }
+                    },
                 }
             });
             let size = args.size.unwrap_or(1);
@@ -86,10 +86,10 @@ pub(crate) fn size(ident: &Ident, data: &Data, args: SilkroadArgs) -> TokenStrea
                     #(#arms),*
                 }
             }
-        }
+        },
         Data::Union(_) => {
             quote!(0)
-        }
+        },
     }
 }
 
@@ -99,16 +99,16 @@ fn generate_size_for(field: &Field, ident: TokenStream) -> TokenStream {
     match ty {
         UsedType::Primitive => {
             quote_spanned!(field.span() => #ident.byte_size())
-        }
+        },
         UsedType::String => {
             let size = field_args.size.unwrap_or(1);
             quote_spanned! { field.span() =>
                 2 + #ident.len() * #size
             }
-        }
+        },
         UsedType::Array(_) => {
             quote_spanned!(field.span() => #ident.len())
-        }
+        },
         UsedType::Collection(inner) => {
             let inner_ty = get_type_of(inner);
             let inner_ts = generate_size_for_inner(inner, &inner_ty, quote!(elem));
@@ -122,11 +122,11 @@ fn generate_size_for(field: &Field, ident: TokenStream) -> TokenStream {
                     1 + #ident.iter().map(|elem| #inner_ts).sum::<usize>()
                 }
             }
-        }
+        },
         UsedType::Option(inner) => {
-            // If we don't have a `when` condition, we use that to determine if the content is included
-            // or not, which does not require an entry for the client to know. Because that also
-            // decides by the condition if there should be more.
+            // If we don't have a `when` condition, we use that to determine if the content
+            // is included or not, which does not require an entry for the client to know.
+            // Because that also decides by the condition if there should be more.
             let size: usize = if field_args.when.is_some() || field_args.size.unwrap_or(1) == 0 {
                 0
             } else {
@@ -137,7 +137,7 @@ fn generate_size_for(field: &Field, ident: TokenStream) -> TokenStream {
             quote_spanned! { field.span() =>
                 #size + #ident.as_ref().map(|elem| #inner_ts).unwrap_or(0)
             }
-        }
+        },
         UsedType::Tuple(inner) => {
             let content = (0..inner.len()).map(Index::from).map(|index| {
                 quote_spanned! { field.span() =>
@@ -147,7 +147,7 @@ fn generate_size_for(field: &Field, ident: TokenStream) -> TokenStream {
             quote_spanned! { field.span() =>
                 #(#content)+*
             }
-        }
+        },
     }
 }
 
@@ -155,24 +155,24 @@ fn generate_size_for_inner(ty: &Type, used_type: &UsedType, ident: TokenStream) 
     match used_type {
         UsedType::Primitive => {
             quote!(#ident.byte_size())
-        }
+        },
         UsedType::String => {
             quote!(2 + #ident.len())
-        }
+        },
         UsedType::Array(_) => {
             quote!(#ident.len())
-        }
+        },
         UsedType::Collection(_) => {
             abort!(ty, "Cannot nest vectors. Create a wrapper struct instead.");
-        }
+        },
         UsedType::Option(_) => {
             abort!(ty, "Cannot nest options. Create a wrapper struct instead.")
-        }
+        },
         UsedType::Tuple(inner) => {
             let content = (0..inner.len())
                 .map(Index::from)
                 .map(|index| quote!(#ident.#index.byte_size()));
             quote!(#(#content)+*)
-        }
+        },
     }
 }

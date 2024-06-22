@@ -1,14 +1,15 @@
-//! `skrillax-codec` is a crate to turn a raw stream of bytes into more meaningful frames in
-//! the format used by Silkroad Online. Framing is only the first step, as a frame is still
-//! quite a general object and does itself not provide many operations. Instead, operations
-//! are contained inside frames and will need to be decoded/encoded separately.
+//! `skrillax-codec` is a crate to turn a raw stream of bytes into more
+//! meaningful frames in the format used by Silkroad Online. Framing is only the
+//! first step, as a frame is still quite a general object and does itself not
+//! provide many operations. Instead, operations are contained inside frames and
+//! will need to be decoded/encoded separately.
 //!
-//! This crate provides two things: the [SilkroadFrame] and [SilkroadCodec]. The latter,
-//! [SilkroadCodec], is expected to be used in combination with tokio's
-//! [tokio_util::codec::FramedWrite] & [tokio_util::codec::FramedRead]. It uses the former,
-//! [SilkroadFrame], as the type it produces. However, it is totally possible to use this
-//! crate without using the codec by using the [SilkroadFrame]'s serialization and deserialization
-//! functions.
+//! This crate provides two things: the [SilkroadFrame] and [SilkroadCodec]. The
+//! latter, [SilkroadCodec], is expected to be used in combination with tokio's
+//! [tokio_util::codec::FramedWrite] & [tokio_util::codec::FramedRead]. It uses
+//! the former, [SilkroadFrame], as the type it produces. However, it is totally
+//! possible to use this crate without using the codec by using the
+//! [SilkroadFrame]'s serialization and deserialization functions.
 
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -18,8 +19,9 @@ const ENCRYPTED_ALIGNMENT: usize = 8;
 
 /// Find the nearest block-aligned length.
 ///
-/// Given the current length of data to encrypt, calculates the length of the encrypted output, which includes
-/// padding. Can at most increase by `ENCRYPTED_ALIGNMENT - 1`, which is `7`.
+/// Given the current length of data to encrypt, calculates the length of the
+/// encrypted output, which includes padding. Can at most increase by
+/// `ENCRYPTED_ALIGNMENT - 1`, which is `7`.
 fn find_encrypted_length(given_length: usize) -> usize {
     let aligned_length = given_length % ENCRYPTED_ALIGNMENT;
     if aligned_length == 0 {
@@ -30,18 +32,18 @@ fn find_encrypted_length(given_length: usize) -> usize {
     given_length + (8 - aligned_length) // Add padding
 }
 
-/// A 'frame' denotes the most fundamental block of data that can be sent between
-/// the client and the server in Silkroad Online. Any and all operations or data exchanges
-/// are built on top of a kind of frame.
+/// A 'frame' denotes the most fundamental block of data that can be sent
+/// between the client and the server in Silkroad Online. Any and all operations
+/// or data exchanges are built on top of a kind of frame.
 ///
-/// There are two categories of frames; normal frames and massive frames. A normal
-/// frame is the most common frame denoting a single operation using a specified
-/// opcode. This frame may be encrypted, causing everything but the length to require
-/// decrypting before being usable. Massive frames are used to bundle similar
-/// operations together. A massive header is sent first, containing the amount
-/// of operations as well as their opcode, and is then followed by the specified
-/// amount of containers, which now only contain the data. Thus, massive frames
-/// cannot be encrypted.
+/// There are two categories of frames; normal frames and massive frames. A
+/// normal frame is the most common frame denoting a single operation using a
+/// specified opcode. This frame may be encrypted, causing everything but the
+/// length to require decrypting before being usable. Massive frames are used to
+/// bundle similar operations together. A massive header is sent first,
+/// containing the amount of operations as well as their opcode, and is then
+/// followed by the specified amount of containers, which now only contain the
+/// data. Thus, massive frames cannot be encrypted.
 ///
 /// Every frame, including an encrypted frame, contains two additional bytes:
 /// a crc checksum and a cryptographically random count. The former is used
@@ -74,8 +76,9 @@ fn find_encrypted_length(given_length: usize) -> usize {
 ///     count: 0,
 ///     crc: 0,
 ///     opcode: 1,
-///     data: Bytes::new()
-/// }.serialize();
+///     data: Bytes::new(),
+/// }
+/// .serialize();
 /// assert_eq!(bytes.as_ref(), &[0x00, 0x00, 0x01, 0x00, 0x00, 0x00]);
 /// ```
 #[derive(Eq, PartialEq, Debug)]
@@ -150,15 +153,17 @@ impl SilkroadFrame {
         Ok((total_consumed, Self::from_data(&data)))
     }
 
-    /// Creates a [SilkroadFrame] given the received data. Generally, this will result
-    /// in a [SilkroadFrame::Packet], unless we encounter a packet with the opcode
-    /// `0x600D`, which is reserved for a massive packet, consisting of a
-    /// [SilkroadFrame::MassiveHeader] and multiple [SilkroadFrame::MassiveContainer]s.
+    /// Creates a [SilkroadFrame] given the received data. Generally, this will
+    /// result in a [SilkroadFrame::Packet], unless we encounter a packet
+    /// with the opcode `0x600D`, which is reserved for a massive packet,
+    /// consisting of a [SilkroadFrame::MassiveHeader] and multiple
+    /// [SilkroadFrame::MassiveContainer]s.
     ///
-    /// This assumes the data is well-formed, i.e. first two bytes opcode, one byte
-    /// security count, one byte crc, and the rest data. If the data represents a
-    /// massive frame, it's also expected that the massive information has the
-    /// correct format. In other cases, this will currently _panic_.
+    /// This assumes the data is well-formed, i.e. first two bytes opcode, one
+    /// byte security count, one byte crc, and the rest data. If the data
+    /// represents a massive frame, it's also expected that the massive
+    /// information has the correct format. In other cases, this will
+    /// currently _panic_.
     pub fn from_data(data: &[u8]) -> SilkroadFrame {
         assert!(data.len() >= 4);
         let opcode = LittleEndian::read_u16(&data[0..2]);
@@ -208,14 +213,15 @@ impl SilkroadFrame {
             SilkroadFrame::Encrypted { content_size, .. } => *content_size,
             SilkroadFrame::MassiveHeader { .. } => {
                 // Massive headers have a fixed length because they're always:
-                // 1 Byte 'is header', 2 Bytes 'amount of packets', 2 Bytes 'opcode', 1 Byte unknown
+                // 1 Byte 'is header', 2 Bytes 'amount of packets', 2 Bytes 'opcode', 1 Byte
+                // unknown
                 6
-            }
+            },
             SilkroadFrame::MassiveContainer { inner, .. } => {
                 // 1 at the start to denote that this is container packet
                 // 1 in each content to denote there's more
                 1 + inner.len()
-            }
+            },
         }
     }
 
@@ -227,7 +233,7 @@ impl SilkroadFrame {
         match self {
             SilkroadFrame::Encrypted { content_size, .. } => {
                 find_encrypted_length(*content_size + 4) + 2
-            }
+            },
             _ => 6 + self.content_size(),
         }
     }
@@ -260,14 +266,14 @@ impl SilkroadFrame {
                 output.put_u8(*count);
                 output.put_u8(*crc);
                 output.put_slice(data);
-            }
+            },
             SilkroadFrame::Encrypted {
                 content_size,
                 encrypted_data,
             } => {
                 output.put_u16_le((*content_size | 0x8000) as u16);
                 output.put_slice(encrypted_data);
-            }
+            },
             SilkroadFrame::MassiveHeader {
                 count,
                 crc,
@@ -282,7 +288,7 @@ impl SilkroadFrame {
                 output.put_u16_le(*contained_count);
                 output.put_u16_le(*contained_opcode);
                 output.put_u8(0);
-            }
+            },
             SilkroadFrame::MassiveContainer { count, crc, inner } => {
                 output.put_u16_le(self.content_size() as u16);
                 output.put_u16_le(MASSIVE_PACKET_OPCODE);
@@ -290,7 +296,7 @@ impl SilkroadFrame {
                 output.put_u8(*crc);
                 output.put_u8(0);
                 output.put_slice(inner);
-            }
+            },
         }
 
         output.freeze()
@@ -332,7 +338,7 @@ mod codec {
                 Ok((bytes_read, frame)) => {
                     src.advance(bytes_read);
                     Ok(Some(frame))
-                }
+                },
                 Err(_) => Ok(None),
             }
         }

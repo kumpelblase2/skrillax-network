@@ -23,7 +23,7 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Tok
                     #(#content)*
                     Ok(#ident { #(#idents),* })
                 }
-            }
+            },
             Fields::Unnamed(unnamed) => {
                 let idents = (0..unnamed.unnamed.len())
                     .map(|i| format_ident!("t{}", i))
@@ -37,12 +37,12 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Tok
                     #(#content)*
                     Ok(#ident(#(#idents),*))
                 }
-            }
+            },
             Fields::Unit => {
                 quote_spanned! { ident.span() =>
                     Ok(#ident)
                 }
-            }
+            },
         },
         Data::Enum(ref enum_data) => {
             let enum_size = args.size.unwrap_or(1);
@@ -72,7 +72,7 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Tok
                                 Ok(#ident::#variant_ident { #(#idents),* })
                             }
                         }
-                    }
+                    },
                     Fields::Unnamed(unnamed) => {
                         let idents = (0..unnamed.unnamed.len())
                             .map(|i| format_ident!("t{}", i))
@@ -88,12 +88,12 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Tok
                                 Ok(#ident::#variant_ident(#(#idents),*))
                             }
                         }
-                    }
+                    },
                     Fields::Unit => {
                         quote_spanned! { variant_ident.span() =>
                             #value => Ok(#ident::#variant_ident)
                         }
-                    }
+                    },
                 }
             });
 
@@ -112,7 +112,7 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Tok
                     unknown => Err(skrillax_serde::SerializationError::UnknownVariation(unknown as usize, #variant_string)),
                 }
             }
-        }
+        },
         _ => abort!(ident, "Unions are not supported."),
     }
 }
@@ -126,7 +126,7 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
             quote_spanned! { field.span() =>
                 let #ident = #type_name::read_from(reader)?;
             }
-        }
+        },
         UsedType::String => {
             let content = match args.size.unwrap_or(1) {
                 1 => quote! {
@@ -149,14 +149,14 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                 let mut bytes = Vec::with_capacity(len.into());
                 #content
             }
-        }
+        },
         UsedType::Array(len) => {
             quote_spanned! { field.span() =>
                 let mut bytes = [0u8; #len];
                 reader.read_exact(&mut bytes)?;
                 let #ident = bytes;
             }
-        }
+        },
         UsedType::Collection(inner) => {
             let inner_ty = get_type_of(inner);
             let inner = generate_reader_for_inner(ident, inner, &inner_ty);
@@ -177,7 +177,7 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                         }
                         let #ident = items;
                     }
-                }
+                },
                 _ => {
                     quote_spanned! { field.span() =>
                         let size = u8::read_from(reader)?;
@@ -188,9 +188,9 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                         }
                         let #ident = items;
                     }
-                }
+                },
             }
-        }
+        },
         UsedType::Option(inner) => {
             let inner_ty = get_type_of(inner);
             let inner_ts = generate_reader_for_inner(ident, inner, &inner_ty);
@@ -208,7 +208,7 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                     } else {
                         abort!(field, "Condition could not be parsed");
                     }
-                }
+                },
                 None => {
                     quote_spanned! { field.span() =>
                         let some = u8::read_from(reader)?;
@@ -219,9 +219,9 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                             None
                         };
                     }
-                }
+                },
             }
-        }
+        },
         UsedType::Tuple(inner) => {
             let idents = (0..inner.len())
                 .map(|i| format_ident!("t{}", i))
@@ -234,7 +234,7 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                 #(#content)*
                 let #ident = (#(#idents),*);
             }
-        }
+        },
     }
 }
 
@@ -244,7 +244,7 @@ fn generate_reader_for_inner(ident: &Ident, type_name: &Type, ty: &UsedType) -> 
             quote_spanned! { ident.span() =>
                 let #ident = #type_name::read_from(reader)?;
             }
-        }
+        },
         UsedType::String => {
             quote_spanned! { ident.span() =>
                 let len = u16::read_from(reader)?;
@@ -254,14 +254,14 @@ fn generate_reader_for_inner(ident: &Ident, type_name: &Type, ty: &UsedType) -> 
                 }
                 let #ident = String::from_utf8(bytes)?;
             }
-        }
+        },
         UsedType::Array(len) => {
             quote_spanned! { ident.span() =>
                 let mut bytes = [0u8; #len];
                 reader.read_exact(bytes)?;
                 let #ident = bytes;
             }
-        }
+        },
         UsedType::Collection(inner) => {
             quote_spanned! { ident.span() =>
                 let size = u8::read_from(reader)?;
@@ -271,7 +271,7 @@ fn generate_reader_for_inner(ident: &Ident, type_name: &Type, ty: &UsedType) -> 
                 }
                 let #ident = items;
             }
-        }
+        },
         UsedType::Option(inner) => {
             quote_spanned! { ident.span() =>
                 let some = u8::read_from(reader)?;
@@ -281,12 +281,12 @@ fn generate_reader_for_inner(ident: &Ident, type_name: &Type, ty: &UsedType) -> 
                     None
                 };
             }
-        }
+        },
         UsedType::Tuple(inner) => {
             let content = inner.iter().map(|ty| quote!(#ty::read_from(reader)?));
             quote_spanned! { ident.span() =>
                 let #ident = (#(#content),*);
             }
-        }
+        },
     }
 }

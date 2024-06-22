@@ -1,9 +1,10 @@
-//! `skrillax-serde` provides definitions for serialization/deserialization of data structures used
-//! in Silkroad Online.
+//! `skrillax-serde` provides definitions for serialization/deserialization of
+//! data structures used in Silkroad Online.
 //!
-//! Generally, you won't be implementing the traits provided here, but will be automatically
-//! deriving these instead. We provide three traits: [Serialize], [Deserialize], and [ByteSize],
-//! for serializing, deserializing, and estimating the size respectively.
+//! Generally, you won't be implementing the traits provided here, but will be
+//! automatically deriving these instead. We provide three traits: [Serialize],
+//! [Deserialize], and [ByteSize], for serializing, deserializing, and
+//! estimating the size respectively.
 
 pub mod error;
 mod time;
@@ -18,9 +19,9 @@ pub use skrillax_serde_derive::{ByteSize, Deserialize, Serialize};
 #[cfg(feature = "chrono")]
 pub use time::SilkroadTime;
 
-// This is necessary, because otherwise we'd need to make the user of our derive traits
-// add `use` definitions for `bytes` and `byteorder`. Which would require them also to add
-// these as dependencies of their own. Yikes.
+// This is necessary, because otherwise we'd need to make the user of our derive
+// traits add `use` definitions for `bytes` and `byteorder`. Which would require
+// them also to add these as dependencies of their own. Yikes.
 #[doc(hidden)]
 pub mod __internal {
     pub use byteorder;
@@ -63,10 +64,12 @@ macro_rules! implement_primitive {
 /// and may have more space available for more items to follow. However,
 /// it is always at least the size provided by [ByteSize].
 pub trait Serialize: ByteSize {
-    /// Writes all bytes representing the content of the struct to the writer output.
+    /// Writes all bytes representing the content of the struct to the writer
+    /// output.
     fn write_to(&self, writer: &mut BytesMut);
 
-    /// Convenience around [self.write_to] which already reserves the necessary space.
+    /// Convenience around [self.write_to] which already reserves the necessary
+    /// space.
     fn write_to_end(&self, writer: &mut BytesMut) {
         writer.reserve(self.byte_size());
         self.write_to(writer);
@@ -79,12 +82,14 @@ pub trait Serialize: ByteSize {
 /// are enough bytes available to be read for the deserialization of this
 /// item to completed successfully.
 pub trait Deserialize {
-    /// Tries to read the data contained in `reader` to create and instance of `Self`.
+    /// Tries to read the data contained in `reader` to create and instance of
+    /// `Self`.
     ///
     /// May return an error if the data did not match the expected format.
     fn read_from<T: Read + ReadBytesExt>(reader: &mut T) -> Result<Self, SerializationError>
     where
-        Self: Sized; // Technically, we don't care about being `Sized`, but unfortunately, Result does.
+        Self: Sized; // Technically, we don't care about being `Sized`, but unfortunately, Result
+                     // does.
 }
 
 /// An item having a [ByteSize] implementation specifies it has a known
@@ -94,8 +99,9 @@ pub trait Deserialize {
 /// should not be taken as an exact value, though it should always match
 /// the final size. Assume this to be a good estimate instead.
 pub trait ByteSize {
-    /// Given the current element, provide the amounts of bytes necessary to represent this element.
-    /// This should never error and instead return size of 0.
+    /// Given the current element, provide the amounts of bytes necessary to
+    /// represent this element. This should never error and instead return
+    /// size of 0.
     fn byte_size(&self) -> usize;
 }
 

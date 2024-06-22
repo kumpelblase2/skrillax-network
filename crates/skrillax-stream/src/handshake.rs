@@ -168,7 +168,7 @@ impl InputProtocol for HandshakeActiveProtocol {
                     consumed,
                     HandshakeActiveProtocol::SecurityCapabilityCheck(check),
                 ))
-            }
+            },
             _ => Err(InStreamError::UnmatchedOpcode(opcode)),
         }
     }
@@ -211,14 +211,14 @@ impl InputProtocol for HandshakePassiveProtocol {
                     consumed,
                     HandshakePassiveProtocol::HandshakeAccepted(accepted),
                 ))
-            }
+            },
             HandshakeChallenge::ID => {
                 let (consumed, challenge) = HandshakeChallenge::try_deserialize(data)?;
                 Ok((
                     consumed,
                     HandshakePassiveProtocol::HandshakeChallenge(challenge),
                 ))
-            }
+            },
             _ => Err(InStreamError::UnmatchedOpcode(opcode)),
         }
     }

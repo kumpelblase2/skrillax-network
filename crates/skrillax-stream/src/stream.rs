@@ -304,7 +304,7 @@ where
                     Ok(packet) => return Ok(packet),
                     Err(ReframingError::Incomplete(required)) => {
                         remaining += required.unwrap_or(1);
-                    }
+                    },
                     Err(e) => return Err(InStreamError::ReframingError(e)),
                 }
             }
