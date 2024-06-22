@@ -3,6 +3,10 @@ name = "simple-official-client"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "simple-official-client"
+test = false
+
 [dependencies]
 skrillax-stream = { path = "../../crates/skrillax-stream" }
 skrillax-packet = { path = "../../crates/skrillax-packet", features = ["derive", "serde"] }
