@@ -2,11 +2,22 @@
 name = "skrillax-protocol"
 version = "0.1.0"
 edition = "2021"
+authors = ["kumpelblase2"]
+description = "Macro to build up a protocol for use with skrillax-stream"
+license = "MIT"
+repository = "https://git.eternalwings.de/tim/skrillax-network"
+categories = ["network-programming"]
+keywords = ["silkroad", "protocol", "macro"]
+
 
 [dependencies]
 skrillax-packet = { version = "0.2.0", path = "../skrillax-packet" }
 skrillax-stream = { version = "0.1.0", path = "../skrillax-stream" }
 
 [dev-dependencies]
-skrillax-packet = { version = "0.2.0", path = "../skrillax-packet", features = ["derive"] }
-skrillax-serde = { version = "0.1.1", path = "../skrillax-serde", features = ["derive"] }
+skrillax-packet = { version = "0.2.0", path = "../skrillax-packet", features = [
+    "derive",
+] }
+skrillax-serde = { version = "0.1.1", path = "../skrillax-serde", features = [
+    "derive",
+] }
