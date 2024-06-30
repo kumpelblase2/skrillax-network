@@ -79,8 +79,8 @@ macro_rules! define_protocol {
             )*
         }
 
-        impl skrillax_stream::InputProtocol for $name {
-            fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), skrillax_stream::stream::InStreamError> {
+        impl $crate::__internal::InputProtocol for $name {
+            fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), $crate::__internal::InStreamError> {
                 match opcode {
                     $(
                         $enumValue::ID => {
@@ -97,18 +97,18 @@ macro_rules! define_protocol {
                             return Ok((consumed, $name::$innerProto(res)));
                         }
                         )*
-                        Err(skrillax_stream::stream::InStreamError::UnmatchedOpcode(opcode))
+                        Err($crate::__internal::InStreamError::UnmatchedOpcode(opcode))
                     }
                 }
 
             }
         }
 
-        impl skrillax_stream::OutputProtocol for $name {
-            fn to_packet(&self) -> skrillax_packet::OutgoingPacket {
+        impl $crate::__internal::OutputProtocol for $name {
+            fn to_packet(&self) -> $crate::__internal::OutgoingPacket {
                 match self {
                     $(
-                        $name::$enumValue(inner) => skrillax_packet::TryIntoPacket::serialize(inner),
+                        $name::$enumValue(inner) => $crate::__internal::TryIntoPacket::serialize(inner),
                     )*
                     $(
                         $name::$innerProto(inner) => inner.to_packet(),
@@ -170,7 +170,8 @@ macro_rules! define_protocol {
 
 #[doc(hidden)]
 pub mod __internal {
-    use skrillax_packet::Packet;
+    pub use skrillax_packet::*;
+    pub use skrillax_stream::stream::*;
 
     pub trait MatchOpcode {
         fn has_opcode(opcode: u16) -> bool;
