@@ -23,8 +23,32 @@ use std::time::Duration;
 /// of Silkroad Online; having multiple ways of representing a date time. A
 /// [SilkroadTime] takes 4 bytes, while a [DateTime] will be serialized into 16
 /// bytes. Therefor, depending on the data type, one or the other may be chosen.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct SilkroadTime(DateTime<Utc>);
+
+impl SilkroadTime {
+    pub fn as_u32(&self) -> u32 {
+        ((self.year() - 2000) as u32) & 63
+            | ((self.month() - 1) & 15) << 6
+            | ((self.day() - 1) & 31) << 10
+            | (self.hour() & 31) << 15
+            | (self.minute() & 63) << 20
+            | (self.second() & 63) << 26
+    }
+
+    pub fn from_u32(data: u32) -> Self {
+        let year = (data & 63) + 2000;
+        let month = ((data >> 6) & 15) + 1;
+        let day = ((data >> 10) & 31) + 1;
+        let hours = (data >> 15) & 31;
+        let minute = (data >> 20) & 63;
+        let second = (data >> 26) & 63;
+        SilkroadTime(
+            Utc.with_ymd_and_hms(year as i32, month, day, hours, minute, second)
+                .unwrap(),
+        )
+    }
+}
 
 impl Default for SilkroadTime {
     fn default() -> Self {
@@ -56,19 +80,23 @@ impl Deref for SilkroadTime {
 
 impl Serialize for SilkroadTime {
     fn write_to(&self, writer: &mut BytesMut) {
-        let data = ((self.year() - 2000) as u32) & 63
-            | ((self.month() - 1) & 15) << 6
-            | ((self.day() - 1) & 31) << 10
-            | (self.hour() & 31) << 15
-            | (self.minute() & 63) << 20
-            | (self.second() & 63) << 26;
-        data.write_to(writer);
+        self.as_u32().write_to(writer)
     }
 }
 
 impl ByteSize for SilkroadTime {
     fn byte_size(&self) -> usize {
         4
+    }
+}
+
+impl Deserialize for SilkroadTime {
+    fn read_from<T: Read + ReadBytesExt>(reader: &mut T) -> Result<Self, SerializationError>
+    where
+        Self: Sized,
+    {
+        let data = reader.read_u32::<LittleEndian>()?;
+        Ok(SilkroadTime::from_u32(data))
     }
 }
 
@@ -132,5 +160,23 @@ mod test {
 
         let highest = written_bytes[3];
         assert_eq!(highest >> 2, 35);
+    }
+
+    #[test]
+    pub fn test_to_u32() {
+        let time = SilkroadTime::from(Utc.with_ymd_and_hms(2001, 10, 20, 14, 24, 40).unwrap());
+        let res = time.as_u32();
+        assert_eq!(res, 2709999169);
+    }
+
+    #[test]
+    pub fn test_convert_time_back() {
+        let time = SilkroadTime::from_u32(2709999169);
+        assert_eq!(time.year(), 2001);
+        assert_eq!(time.month(), 10);
+        assert_eq!(time.day(), 20);
+        assert_eq!(time.hour(), 14);
+        assert_eq!(time.minute(), 24);
+        assert_eq!(time.second(), 40);
     }
 }
