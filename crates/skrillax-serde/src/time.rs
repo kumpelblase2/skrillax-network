@@ -3,9 +3,11 @@
 //! display.
 #![cfg(feature = "chrono")]
 
-use crate::{ByteSize, Serialize};
+use crate::{ByteSize, Deserialize, SerializationError, Serialize};
+use byteorder::{LittleEndian, ReadBytesExt};
 use bytes::{BufMut, BytesMut};
 use chrono::{DateTime, Datelike, Duration as CDuration, TimeZone, Timelike, Utc};
+use std::io::Read;
 use std::ops::{Add, Deref};
 use std::time::Duration;
 
@@ -72,19 +74,36 @@ impl ByteSize for SilkroadTime {
 
 impl<T: TimeZone> Serialize for DateTime<T> {
     fn write_to(&self, writer: &mut BytesMut) {
-        writer.put_u16_le(self.year() as u16);
-        writer.put_u16_le(self.month() as u16);
-        writer.put_u16_le(self.day() as u16);
-        writer.put_u16_le(self.hour() as u16);
-        writer.put_u16_le(self.minute() as u16);
-        writer.put_u16_le(self.second() as u16);
-        writer.put_u32_le(self.timestamp_millis() as u32);
+        let utc_time = self.to_utc();
+        writer.put_u16_le(utc_time.year() as u16);
+        writer.put_u16_le(utc_time.month() as u16);
+        writer.put_u16_le(utc_time.day() as u16);
+        writer.put_u16_le(utc_time.hour() as u16);
+        writer.put_u16_le(utc_time.minute() as u16);
+        writer.put_u16_le(utc_time.second() as u16);
+        writer.put_u32_le(utc_time.timestamp_millis() as u32);
     }
 }
 
 impl<T: TimeZone> ByteSize for DateTime<T> {
     fn byte_size(&self) -> usize {
         16
+    }
+}
+
+impl Deserialize for DateTime<Utc> {
+    fn read_from<T: Read + ReadBytesExt>(reader: &mut T) -> Result<Self, SerializationError> {
+        let timestamp = Utc
+            .with_ymd_and_hms(
+                reader.read_u16::<LittleEndian>()? as i32,
+                reader.read_u16::<LittleEndian>()? as u32,
+                reader.read_u16::<LittleEndian>()? as u32,
+                reader.read_u16::<LittleEndian>()? as u32,
+                reader.read_u16::<LittleEndian>()? as u32,
+                reader.read_u16::<LittleEndian>()? as u32,
+            )
+            .unwrap();
+        Ok(timestamp + Duration::from_millis(reader.read_u32::<LittleEndian>()? as u64))
     }
 }
 
