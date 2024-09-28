@@ -1,8 +1,8 @@
-use std::net::ToSocketAddrs;
-
+use chrono::{DateTime, Utc};
 use skrillax_packet::Packet;
 use skrillax_serde::{ByteSize, Deserialize, Serialize};
 use skrillax_stream::{handshake::PassiveSecuritySetup, stream::SilkroadTcpExt};
+use std::net::ToSocketAddrs;
 use tokio::net::{TcpSocket, TcpStream};
 
 const JOYMAX_GATEWAY_ADDRESS: &str = "gwgt1.joymax.com:15779";
@@ -12,6 +12,30 @@ const JOYMAX_GATEWAY_ADDRESS: &str = "gwgt1.joymax.com:15779";
 pub struct IdentityInformation {
     pub module_name: String,
     pub locality: u8,
+}
+
+#[derive(Clone, Deserialize, Serialize, ByteSize, Packet, Debug)]
+#[packet(opcode = 0x6104)]
+pub struct GatewayNoticeRequest {
+    pub unknown: u8,
+}
+
+#[derive(Clone, Serialize, Deserialize, ByteSize, Packet, Debug)]
+#[packet(opcode = 0xA104, massive = true)]
+pub struct GatewayNoticeResponse {
+    #[silkroad(list_type = "length")]
+    pub notices: Vec<GatewayNotice>,
+}
+
+type ServerDateTime = DateTime<Utc>;
+
+#[derive(Clone, Deserialize, Serialize, ByteSize, Debug)]
+pub struct GatewayNotice {
+    #[silkroad(size = 2)]
+    pub subject: String,
+    #[silkroad(size = 2)]
+    pub article: String,
+    pub published: ServerDateTime,
 }
 
 #[tokio::main]
@@ -31,6 +55,19 @@ async fn main() {
 
     let their_info = reader.next_packet::<IdentityInformation>().await.unwrap();
     println!("{}", their_info.module_name);
+    writer
+        .write_packet(GatewayNoticeRequest { unknown: 0x12 })
+        .await
+        .unwrap();
+    let notices = reader.next_packet::<GatewayNoticeResponse>().await.unwrap();
+    for notice in notices.notices {
+        println!(
+            "{}: {} - {}",
+            notice.published,
+            notice.subject,
+            &notice.article[0..10]
+        );
+    }
 }
 
 async fn connect_to_silkroad() -> TcpStream {
