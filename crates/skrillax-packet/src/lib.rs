@@ -26,12 +26,12 @@
 //! `IncomingPacket::from_frames(frames, context).try_into_packet::<MyPacket>()`
 //!
 //! However, this does require a bit more than just the [Packet] implementation.
-//! Either you need to implement the [TryFromPacket] and [TryIntoPacket] traits
+//! Either you need to implement the [TryFromPacket] and [AsPacket] traits
 //! yourself, or you need to implement/derive [skrillax_serde::Serialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Serialize.html),
 //! [skrillax_serde::Deserialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Deserialize.html),
 //! and [skrillax_serde::ByteSize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.ByteSize.html)
 //! from the [skrillax_serde](https://docs.rs/skrillax-serde/latest/skrillax_serde/) crate.
-//! With these, [TryIntoPacket] and [TryFromPacket] are automatically
+//! With these, [AsPacket] and [TryFromPacket] are automatically
 //! implemented for you. They are necessary to serialize/deserialize the packet
 //! content into bytes, which can be sent using the frames.
 //!
@@ -83,10 +83,10 @@ pub enum PacketError {
 ///
 /// If this struct also implements [skrillax_serde::ByteSize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.ByteSize.html)
 /// and [skrillax_serde::Serialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Serialize.html),
-/// it will automatically gain [TryIntoPacket]. If it implements
+/// it will automatically gain [AsPacket]. If it implements
 /// [skrillax_serde::Deserialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Deserialize.html), it will automatically gain [TryFromPacket].
 /// This can automatically be derived with the `derive` feature.
-pub trait Packet: Sized {
+pub trait Packet {
     /// Defines the ID or OpCode of the packet.
     const ID: u16;
     /// Provides a more readable name for the given packet. This is usually just
@@ -154,9 +154,15 @@ pub enum OutgoingPacket {
 /// already implements [Packet] and [Deserialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Deserialize.html).
 ///
 /// The analog is [TryFromPacket].
-pub trait TryIntoPacket {
+pub trait AsPacket {
     /// Serializes this structure into a packet that can be sent over the wire.
-    fn serialize(&self) -> OutgoingPacket;
+    fn as_packet(&self) -> OutgoingPacket;
+}
+
+impl<T: AsPacket> From<T> for OutgoingPacket {
+    fn from(value: T) -> Self {
+        value.as_packet()
+    }
 }
 
 /// Defines _something_ that can be created from a packet, after it has been
@@ -165,9 +171,9 @@ pub trait TryIntoPacket {
 /// Once a re-framing, decryption and other parts have completed, we want to
 /// turn the contained data into a usable structure.
 ///
-/// The analog is [TryIntoPacket].
-pub trait TryFromPacket: Sized {
-    /// Tries to create `Self` from the given data. Unlike [TryIntoPacket], we
+/// The analog is [AsPacket].
+pub trait TryFromPacket {
+    /// Tries to create `Self` from the given data. Unlike [AsPacket], we
     /// do not deal with the opcode here. It is expected that we have
     /// already matched the opcode to `Self` and know it matches.
     ///
@@ -175,13 +181,15 @@ pub trait TryFromPacket: Sized {
     /// for example if we were inside a massive frame. Thus, we need to
     /// return the amount of consumed bytes such that the remainder may be
     /// used to create more elements of `Self` if the caller wants to.
-    fn try_deserialize(data: &[u8]) -> Result<(usize, Self), PacketError>;
+    fn try_deserialize(data: &[u8]) -> Result<(usize, Self), PacketError>
+    where
+        Self: Sized;
 }
 
 #[cfg(feature = "serde")]
 impl<T> TryFromPacket for T
 where
-    T: Packet + Deserialize,
+    T: Packet + Deserialize + Send + Sized,
 {
     fn try_deserialize(data: &[u8]) -> Result<(usize, Self), PacketError> {
         use bytes::Buf;
@@ -193,11 +201,40 @@ where
 }
 
 #[cfg(feature = "serde")]
-impl<T> TryIntoPacket for T
+impl<T> AsPacket for [T]
 where
     T: Packet + Serialize + ByteSize,
 {
-    fn serialize(&self) -> OutgoingPacket {
+    fn as_packet(&self) -> OutgoingPacket {
+        use std::cmp::{max, min};
+        assert!(T::MASSIVE, "Can only transform massive packets");
+        let total_size = self.iter().map(|p| p.byte_size()).sum();
+        let mut buffer = BytesMut::with_capacity(total_size);
+        for p in self {
+            p.write_to(&mut buffer);
+        }
+
+        let mut data = buffer.freeze();
+        let required_packets = max(data.len() / 0x7FFF, 1);
+
+        let mut result = Vec::with_capacity(required_packets);
+        for _ in 0..required_packets {
+            result.push(data.split_to(min(0x7FFF, data.len())));
+        }
+
+        OutgoingPacket::Massive {
+            opcode: T::ID,
+            packets: result,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<T> AsPacket for T
+where
+    T: Packet + Serialize + ByteSize,
+{
+    fn as_packet(&self) -> OutgoingPacket {
         use std::cmp::{max, min};
 
         let mut buffer = BytesMut::with_capacity(self.byte_size());
@@ -391,7 +428,8 @@ pub enum ReframingError {
 }
 
 /// Provides a way to turn [SilkroadFrame]s into an [IncomingPacket].
-pub trait FromFrames: Sized {
+pub trait FromFrames {
+    type Output;
     /// Try to turn _all_ frames into an incoming packet.
     ///
     /// This accepts a slice of frames, which is either a single packet frame
@@ -406,7 +444,7 @@ pub trait FromFrames: Sized {
     fn from_frames(
         frames: &[SilkroadFrame],
         security: SecurityContext,
-    ) -> Result<Self, ReframingError>;
+    ) -> Result<Self::Output, ReframingError>;
 }
 
 struct MassiveInfo {
@@ -415,6 +453,8 @@ struct MassiveInfo {
 }
 
 impl FromFrames for IncomingPacket {
+    type Output = IncomingPacket;
+
     fn from_frames(
         frames: &[SilkroadFrame],
         security: SecurityContext,

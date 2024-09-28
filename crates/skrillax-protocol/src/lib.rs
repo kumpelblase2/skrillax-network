@@ -4,7 +4,7 @@
 //!
 //! A protocol defines a set of opcodes and their respective structures. It is
 //! essentially a mapping of `opcode -> struct`. To encourage more static
-//! dispatch and better developer ergonimics, we want to provide a nice way of
+//! dispatch and better developer ergonomics, we want to provide a nice way of
 //! constructing these mappings. Otherwise, this would become quite tedious.
 //! Additionally, this also generates some convenience functions to
 //! automatically move between different protocols that are related.
@@ -17,7 +17,7 @@
 macro_rules! __match_packet_opcode {
     ($opcodeVar:ident =>) => {false};
     ($opcodeVar:ident => $($packet:ident),+) => {
-        $($packet::ID == $opcodeVar)||+
+        $(<$packet as $crate::__internal::Packet>::ID == $opcodeVar)||+
     };
 }
 
@@ -32,11 +32,12 @@ macro_rules! __match_protocol_opcode {
 
 /// Defines a protocol from a list of packets and/or other protocols.
 ///
-/// A protocol always has a name and may contain packets and/or other protocols.
-/// This protocol will then be represented as an enum, where each of the
-/// packets/protocols is its own variant. With this enum, all the necessary
-/// traits for usage with [skrillax_stream] will then be implemented. In
-/// particular, the following traits will be implement by the generated enum:
+/// A protocol always has a name and may contain packets and/or other
+/// protocols. This protocol will then be represented as an enum, where
+/// each of the packets/protocols is its own variant. With this enum,
+/// all the necessary traits for usage with [skrillax_stream] will then
+/// be implemented. In particular, the following traits will be
+/// implement by the generated enum:
 /// - [InputProtocol](skrillax_stream::InputProtocol)
 /// - [OutputProtocol](skrillax_stream::OutputProtocol)
 /// - [From], to create the protocol from a variant value
@@ -51,16 +52,19 @@ macro_rules! __match_protocol_opcode {
 ///     MyProtocol
 /// }
 /// ```
-/// This assumes `MyPacket` & `MyOtherPacket` derive [skrillax_packet::Packet]
-/// and `MyProtocol` has also been created using `define_protocol!`.
+/// This assumes `MyPacket` & `MyOtherPacket` derive
+/// [skrillax_packet::Packet] and `MyProtocol` has also been created
+/// using `define_protocol!`.
 ///
-/// (!) One limitation of `define_protocol!` is, because it always provides an
-/// implementation for [InputProtocol](skrillax_stream::InputProtocol) &
-/// [OutputProtocol](skrillax_stream::OutputProtocol), it requires all packets
-/// _and_ protocols to be both `Serialize` & `Derserialize`. For some packets,
-/// that may not be possible, for example when there's a zero-length optional
-/// field. Any protocols those packets are included would also automatically not
-/// be both serialize and deserialize and could thus also not be used.
+/// (!) One limitation of `define_protocol!` is, because it always provides
+/// an implementation for
+/// [InputProtocol](skrillax_stream::InputProtocol) &
+/// [OutputProtocol](skrillax_stream::OutputProtocol), it requires all
+/// packets _and_ protocols to be both `Serialize` & `Derserialize`. For
+/// some packets, that may not be possible, for example when there's a
+/// zero-length optional field. Any protocols those packets are included
+/// would also automatically not be both serialize and deserialize and
+/// could thus also not be used.
 #[macro_export]
 macro_rules! define_protocol {
     ($name:ident => $($enumValue:ident),*) => {
@@ -69,7 +73,65 @@ macro_rules! define_protocol {
         }
     };
     ($name:ident => $($enumValue:ident),* + $($innerProto:ident),*) => {
-        #[derive(Debug)]
+        $crate::define_protocol_enum! { $name =>
+            $($enumValue),* + $($innerProto),*
+        }
+
+        $crate::define_input_protocol! { $name =>
+            $($enumValue),* + $($innerProto),*
+        }
+
+        $crate::define_output_protocol! { $name =>
+            $($enumValue),* + $($innerProto),*
+        }
+    };
+}
+
+/// Defines an "outbound" protocol, i.e. a protocol we only care about
+/// sending out to another party.
+#[macro_export]
+macro_rules! define_outbound_protocol {
+    ($name:ident => $($enumValue:ident),*) => {
+        define_outbound_protocol! {
+            $name => $($enumValue),* +
+        }
+    };
+    ($name:ident => $($enumValue:ident),* + $($innerProto:ident),*) => {
+        $crate::define_protocol_enum! { $name =>
+            $($enumValue),* + $($innerProto),*
+        }
+
+        $crate::define_output_protocol! { $name =>
+            $($enumValue),* + $($innerProto),*
+        }
+    }
+}
+
+/// Defines an "inbound" protocol, i.e. a protocol we only care about
+/// receiving from another party.
+#[macro_export]
+macro_rules! define_inbound_protocol {
+    ($name:ident => $($enumValue:ident),*) => {
+        define_inbound_protocol! {
+            $name => $($enumValue),* +
+        }
+    };
+    ($name:ident => $($enumValue:ident),* + $($innerProto:ident),*) => {
+        $crate::define_protocol_enum! { $name =>
+            $($enumValue),* + $($innerProto),*
+        }
+
+        $crate::define_input_protocol! { $name =>
+            $($enumValue),* + $($innerProto),*
+        }
+    }
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! define_protocol_enum {
+    ($name:ident => $($enumValue:ident),* + $($innerProto:ident),*) => {
+        #[derive(Debug, Clone)]
         pub enum $name {
             $(
                 $enumValue($enumValue),
@@ -77,51 +139,6 @@ macro_rules! define_protocol {
             $(
                 $innerProto($innerProto),
             )*
-        }
-
-        impl $crate::__internal::InputProtocol for $name {
-            fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), $crate::__internal::InStreamError> {
-                match opcode {
-                    $(
-                        $enumValue::ID => {
-                            let (consumed, res) = $enumValue::try_deserialize(data)?;
-                            Ok((consumed, $name::$enumValue(res)))
-                        }
-                    )*
-                    _ => {
-                        #[allow(unused)]
-                        use $crate::__internal::MatchOpcode;
-                        $(
-                        if $innerProto::has_opcode(opcode) {
-                            let (consumed, res) = $innerProto::create_from(opcode, data)?;
-                            return Ok((consumed, $name::$innerProto(res)));
-                        }
-                        )*
-                        Err($crate::__internal::InStreamError::UnmatchedOpcode(opcode))
-                    }
-                }
-
-            }
-        }
-
-        impl $crate::__internal::OutputProtocol for $name {
-            fn to_packet(&self) -> $crate::__internal::OutgoingPacket {
-                match self {
-                    $(
-                        $name::$enumValue(inner) => $crate::__internal::TryIntoPacket::serialize(inner),
-                    )*
-                    $(
-                        $name::$innerProto(inner) => inner.to_packet(),
-                    )*
-                }
-            }
-        }
-
-        impl $crate::__internal::MatchOpcode for $name {
-            fn has_opcode(opcode: u16) -> bool {
-                $crate::__match_packet_opcode!(opcode => $($enumValue),*) ||
-                $crate::__match_protocol_opcode!(opcode => $($innerProto),*)
-            }
         }
 
         $(
@@ -165,7 +182,65 @@ macro_rules! define_protocol {
                 }
             }
         )*
-    };
+    }
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! define_input_protocol {
+    ($name:ident => $($enumValue:ident),* + $($innerProto:ident),*) => {
+        impl $crate::__internal::InputProtocol for $name {
+            type Proto = Box<$name>;
+
+            fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Box<Self>), $crate::__internal::InStreamError> {
+                match opcode {
+                    $(
+                        <$enumValue as $crate::__internal::Packet>::ID => {
+                            let (consumed, res) = <$enumValue as $crate::__internal::TryFromPacket>::try_deserialize(data)?;
+                            Ok((consumed, Box::new($name::$enumValue(res))))
+                        }
+                    )*
+                    _ => {
+                        #[allow(unused)]
+                        use $crate::__internal::MatchOpcode;
+                        $(
+                        if $innerProto::has_opcode(opcode) {
+                            let (consumed, res) = $innerProto::create_from(opcode, data)?;
+                            return Ok((consumed, Box::new($name::$innerProto(*res))));
+                        }
+                        )*
+                        Err($crate::__internal::InStreamError::UnmatchedOpcode(opcode))
+                    }
+                }
+            }
+        }
+
+        impl $crate::__internal::MatchOpcode for $name {
+            fn has_opcode(opcode: u16) -> bool {
+                $crate::__match_packet_opcode!(opcode => $($enumValue),*) ||
+                $crate::__match_protocol_opcode!(opcode => $($innerProto),*)
+            }
+        }
+    }
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! define_output_protocol {
+    ($name:ident => $($enumValue:ident),* + $($innerProto:ident),*) => {
+        impl From<$name> for $crate::__internal::OutgoingPacket {
+            fn from(value: $name) -> $crate::__internal::OutgoingPacket {
+                match value {
+                    $(
+                        $name::$enumValue(inner) => inner.into(),
+                    )*
+                    $(
+                        $name::$innerProto(inner) => inner.into(),
+                    )*
+                }
+            }
+        }
+    }
 }
 
 #[doc(hidden)]
@@ -186,14 +261,21 @@ pub mod __internal {
 
 #[cfg(test)]
 mod test {
-    use skrillax_packet::{Packet, TryFromPacket};
+    use skrillax_packet::{OutgoingPacket, Packet, TryFromPacket};
     use skrillax_serde::{ByteSize, Deserialize, Serialize};
     use skrillax_stream::InputProtocol;
 
-    #[derive(Packet, Deserialize, ByteSize, Serialize, Debug)]
+    #[derive(Packet, Deserialize, ByteSize, Serialize, Debug, Clone)]
     #[packet(opcode = 0x1000)]
     pub struct TestPacket {
         inner: String,
+    }
+
+    #[derive(Packet, Serialize, ByteSize, Debug, Clone)]
+    #[packet(opcode = 0x1001)]
+    pub struct OutboundPacketOnly {
+        #[silkroad(size = 0)]
+        opt: Option<String>,
     }
 
     define_protocol! { TestProtocol =>
@@ -203,6 +285,10 @@ mod test {
     define_protocol! { WrapperProtocol =>
         +
         TestProtocol
+    }
+
+    define_outbound_protocol! { OutboundProto =>
+        OutboundPacketOnly
     }
 
     #[test]
@@ -218,5 +304,16 @@ mod test {
         let wrapper: WrapperProtocol = proto.into();
         let inner_proto: TestProtocol = wrapper.try_into().expect("Should get back inner");
         let _: TestPacket = inner_proto.try_into().expect("Should get back packet");
+    }
+
+    #[test]
+    fn test_outbound_only() {
+        let packet = OutboundPacketOnly { opt: None };
+        let proto: OutboundProto = packet.into();
+        let data: OutgoingPacket = proto.into();
+        assert!(matches!(
+            data,
+            OutgoingPacket::Simple { opcode: 0x1001, .. }
+        ))
     }
 }

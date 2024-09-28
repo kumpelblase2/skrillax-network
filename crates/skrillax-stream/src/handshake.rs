@@ -41,12 +41,11 @@
 //! packets.
 
 use crate::stream::{
-    InStreamError, InputProtocol, OutStreamError, OutputProtocol, SilkroadStreamRead,
-    SilkroadStreamWrite,
+    InStreamError, InputProtocol, OutStreamError, SilkroadStreamRead, SilkroadStreamWrite,
 };
 use bitflags::bitflags;
 use skrillax_packet::{
-    OutgoingPacket, Packet, PacketError, SecurityBytes, TryFromPacket, TryIntoPacket,
+    AsPacket, OutgoingPacket, Packet, PacketError, SecurityBytes, TryFromPacket,
 };
 use skrillax_security::handshake::{CheckBytesInitialization, PassiveEncryptionInitializationData};
 use skrillax_security::{
@@ -141,9 +140,9 @@ impl SecurityCapabilityCheck {
     }
 }
 
-impl Into<HandshakeActiveProtocol> for SecurityCapabilityCheck {
-    fn into(self) -> HandshakeActiveProtocol {
-        HandshakeActiveProtocol::SecurityCapabilityCheck(self)
+impl From<SecurityCapabilityCheck> for HandshakeActiveProtocol {
+    fn from(value: SecurityCapabilityCheck) -> Self {
+        HandshakeActiveProtocol::SecurityCapabilityCheck(value)
     }
 }
 
@@ -151,15 +150,17 @@ enum HandshakeActiveProtocol {
     SecurityCapabilityCheck(SecurityCapabilityCheck),
 }
 
-impl OutputProtocol for HandshakeActiveProtocol {
-    fn to_packet(&self) -> OutgoingPacket {
-        match self {
-            HandshakeActiveProtocol::SecurityCapabilityCheck(check) => check.serialize(),
+impl From<&HandshakeActiveProtocol> for OutgoingPacket {
+    fn from(value: &HandshakeActiveProtocol) -> Self {
+        match value {
+            HandshakeActiveProtocol::SecurityCapabilityCheck(check) => check.as_packet(),
         }
     }
 }
 
 impl InputProtocol for HandshakeActiveProtocol {
+    type Proto = HandshakeActiveProtocol;
+
     fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), InStreamError> {
         match opcode {
             SecurityCapabilityCheck::ID => {
@@ -181,9 +182,9 @@ struct HandshakeChallenge {
     pub key: u64,
 }
 
-impl Into<HandshakePassiveProtocol> for HandshakeChallenge {
-    fn into(self) -> HandshakePassiveProtocol {
-        HandshakePassiveProtocol::HandshakeChallenge(self)
+impl From<HandshakeChallenge> for HandshakePassiveProtocol {
+    fn from(value: HandshakeChallenge) -> Self {
+        HandshakePassiveProtocol::HandshakeChallenge(value)
     }
 }
 
@@ -191,9 +192,9 @@ impl Into<HandshakePassiveProtocol> for HandshakeChallenge {
 #[packet(opcode = 0x9000)]
 struct HandshakeAccepted;
 
-impl Into<HandshakePassiveProtocol> for HandshakeAccepted {
-    fn into(self) -> HandshakePassiveProtocol {
-        HandshakePassiveProtocol::HandshakeAccepted(self)
+impl From<HandshakeAccepted> for HandshakePassiveProtocol {
+    fn from(value: HandshakeAccepted) -> Self {
+        HandshakePassiveProtocol::HandshakeAccepted(value)
     }
 }
 
@@ -203,6 +204,8 @@ enum HandshakePassiveProtocol {
 }
 
 impl InputProtocol for HandshakePassiveProtocol {
+    type Proto = HandshakePassiveProtocol;
+
     fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), InStreamError> {
         match opcode {
             HandshakeAccepted::ID => {
@@ -224,11 +227,11 @@ impl InputProtocol for HandshakePassiveProtocol {
     }
 }
 
-impl OutputProtocol for HandshakePassiveProtocol {
-    fn to_packet(&self) -> OutgoingPacket {
-        match self {
-            HandshakePassiveProtocol::HandshakeChallenge(challenge) => challenge.serialize(),
-            HandshakePassiveProtocol::HandshakeAccepted(accept) => accept.serialize(),
+impl From<&HandshakePassiveProtocol> for OutgoingPacket {
+    fn from(value: &HandshakePassiveProtocol) -> Self {
+        match value {
+            HandshakePassiveProtocol::HandshakeChallenge(challenge) => challenge.as_packet(),
+            HandshakePassiveProtocol::HandshakeAccepted(accept) => accept.as_packet(),
         }
     }
 }
@@ -335,9 +338,7 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> ActiveSecuritySetup<'_, T, S> 
             handshake_init: encryption,
             ..Default::default()
         };
-        writer
-            .write_packet::<HandshakeActiveProtocol>(init_packet.into())
-            .await?;
+        writer.write_packet(init_packet).await?;
 
         let response = reader.next_packet::<HandshakePassiveProtocol>().await?;
 
@@ -347,14 +348,11 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> ActiveSecuritySetup<'_, T, S> 
 
         let challenge = setup.start_challenge(challenge.b, challenge.key)?;
         writer
-            .write_packet::<HandshakeActiveProtocol>(
-                SecurityCapabilityCheck {
-                    flag: HandshakeContent::FINISH,
-                    challenge: Some(challenge),
-                    ..Default::default()
-                }
-                .into(),
-            )
+            .write_packet(SecurityCapabilityCheck {
+                flag: HandshakeContent::FINISH,
+                challenge: Some(challenge),
+                ..Default::default()
+            })
             .await?;
 
         let response = reader.next_packet::<HandshakePassiveProtocol>().await?;
@@ -426,9 +424,7 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S>
         let challenge = handshake.initialize(encryption_seed)?;
 
         if let Some((key, b)) = challenge {
-            writer
-                .write_packet::<HandshakePassiveProtocol>(HandshakeChallenge { b, key }.into())
-                .await?;
+            writer.write_packet(HandshakeChallenge { b, key }).await?;
 
             let finalize = reader.next_packet::<HandshakeActiveProtocol>().await?;
             let HandshakeActiveProtocol::SecurityCapabilityCheck(capability) = finalize;
@@ -441,9 +437,7 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S>
             };
 
             handshake.finish(challenge)?;
-            writer
-                .write_packet::<HandshakePassiveProtocol>(HandshakeAccepted.into())
-                .await?;
+            writer.write_packet(HandshakeAccepted).await?;
         }
 
         if let Some(encryption) = handshake.done()? {

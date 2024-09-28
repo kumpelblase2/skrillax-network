@@ -3,7 +3,7 @@ use futures::{SinkExt, Stream, StreamExt};
 use skrillax_codec::{SilkroadCodec, SilkroadFrame};
 use skrillax_packet::{
     AsFrames, FramingError, FromFrames, IncomingPacket, OutgoingPacket, Packet, PacketError,
-    ReframingError, SecurityBytes, SecurityContext, TryFromPacket, TryIntoPacket,
+    ReframingError, SecurityBytes, SecurityContext, TryFromPacket,
 };
 use skrillax_security::SilkroadEncryption;
 use std::io;
@@ -57,23 +57,16 @@ pub enum InStreamError {
 }
 
 ///
-pub trait OutputProtocol {
-    fn to_packet(&self) -> OutgoingPacket;
+pub trait InputProtocol {
+    type Proto: Send;
+
+    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self::Proto), InStreamError>;
 }
 
-impl<T: TryIntoPacket> OutputProtocol for T {
-    fn to_packet(&self) -> OutgoingPacket {
-        self.serialize()
-    }
-}
+impl<T: TryFromPacket + Packet + Send> InputProtocol for T {
+    type Proto = T;
 
-///
-pub trait InputProtocol: Sized {
-    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), InStreamError>;
-}
-
-impl<T: TryFromPacket + Packet> InputProtocol for T {
-    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), InStreamError> {
+    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, T), InStreamError> {
         if opcode != T::ID {
             return Err(InStreamError::UnmatchedOpcode(opcode));
         }
@@ -185,11 +178,12 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
         Ok(())
     }
 
-    pub async fn write_packet<S: OutputProtocol>(
+    pub async fn write_packet<S: Into<OutgoingPacket>>(
         &mut self,
         packet: S,
     ) -> Result<(), OutStreamError> {
-        self.write(packet.to_packet()).await
+        let outgoing_packet = packet.into();
+        self.write(outgoing_packet).await
     }
 }
 
@@ -324,7 +318,7 @@ where
     /// Since [InputProtocol] is automatically derived for structs that have
     /// [skrillax_packet::Packet] & [skrillax_serde::Deserialize], you can
     /// both expect a single packet and a full protocol here.
-    pub async fn next_packet<S: InputProtocol>(&mut self) -> Result<S, InStreamError> {
+    pub async fn next_packet<S: InputProtocol>(&mut self) -> Result<S::Proto, InStreamError> {
         let (opcode, mut buffer) = match self.unconsumed.take() {
             Some(inner) => inner,
             _ => self.next().await?.consume(),
