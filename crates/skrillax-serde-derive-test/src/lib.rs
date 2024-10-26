@@ -34,6 +34,12 @@ struct DoubleString(#[silkroad(size = 2)] String);
 struct WithVec(Vec<u32>);
 
 #[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+enum EnumWithNamedVec {
+    #[silkroad(value = 1)]
+    Variant { inner: Vec<Test> },
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
 struct TestCond {
     cond: u8,
     unrelated: String,
@@ -110,6 +116,18 @@ pub fn test_strings() {
 #[test]
 pub fn test_vec() {
     test_serialize_deserialize!(WithVec, WithVec(vec![123, 456, 789]), 13);
+    test_serialize_deserialize!(
+        EnumWithNamedVec,
+        EnumWithNamedVec::Variant {
+            inner: vec![Test {
+                one: 0,
+                two: 0,
+                three: 0,
+                four: 0,
+            }],
+        },
+        17
+    );
 }
 
 #[test]

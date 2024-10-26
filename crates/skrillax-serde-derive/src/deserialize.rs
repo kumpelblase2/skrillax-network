@@ -130,31 +130,31 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
         UsedType::String => {
             let content = match args.size.unwrap_or(1) {
                 1 => quote! {
-                    for _ in 0..len {
-                        bytes.push(u8::read_from(reader)?);
+                    for _ in 0..skrillax_serde_len {
+                        skrillax_serde_bytes.push(u8::read_from(reader)?);
                     }
-                    let #ident = String::from_utf8(bytes)?;
+                    let #ident = String::from_utf8(skrillax_serde_bytes)?;
                 },
                 2 => quote! {
-                    for _ in 0..len {
-                        bytes.push(u16::read_from(reader)?);
+                    for _ in 0..skrillax_serde_len {
+                        skrillax_serde_bytes.push(u16::read_from(reader)?);
                     }
-                    let #ident = String::from_utf16(&bytes)?;
+                    let #ident = String::from_utf16(&skrillax_serde_bytes)?;
                 },
                 _ => abort!(field, "Unknown String size"),
             };
 
             quote_spanned! { field.span() =>
-                let len = u16::read_from(reader)?;
-                let mut bytes = Vec::with_capacity(len.into());
+                let skrillax_serde_len = u16::read_from(reader)?;
+                let mut skrillax_serde_bytes = Vec::with_capacity(skrillax_serde_len.into());
                 #content
             }
         },
         UsedType::Array(len) => {
             quote_spanned! { field.span() =>
-                let mut bytes = [0u8; #len];
-                reader.read_exact(&mut bytes)?;
-                let #ident = bytes;
+                let mut skrillax_serde_bytes = [0u8; #len];
+                reader.read_exact(&mut skrillax_serde_bytes)?;
+                let #ident = skrillax_serde_bytes;
             }
         },
         UsedType::Collection(inner) => {
@@ -165,28 +165,28 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                 "has-more" | "break" => {
                     let break_value = if list_type == "has-more" { 0u8 } else { 2u8 };
                     quote_spanned! { field.span() =>
-                        let mut items = Vec::new();
+                        let mut skrillax_serde_items = Vec::new();
                         loop {
-                            let more = u8::read_from(reader)?;
-                            if more == #break_value {
+                            let skrillax_serde_more = u8::read_from(reader)?;
+                            if skrillax_serde_more == #break_value {
                                 break;
                             }
 
                             #inner
-                            items.push(#ident);
+                            skrillax_serde_items.push(#ident);
                         }
-                        let #ident = items;
+                        let #ident = skrillax_serde_items;
                     }
                 },
                 _ => {
                     quote_spanned! { field.span() =>
-                        let size = u8::read_from(reader)?;
-                        let mut items = Vec::with_capacity(size.into());
-                        for _ in 0..size {
+                        let skrillax_serde_size = u8::read_from(reader)?;
+                        let mut skrillax_serde_items = Vec::with_capacity(skrillax_serde_size.into());
+                        for _ in 0..skrillax_serde_size {
                             #inner
-                            items.push(#ident);
+                            skrillax_serde_items.push(#ident);
                         }
-                        let #ident = items;
+                        let #ident = skrillax_serde_items;
                     }
                 },
             }
@@ -211,8 +211,8 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                 },
                 None => {
                     quote_spanned! { field.span() =>
-                        let some = u8::read_from(reader)?;
-                        let #ident = if some == 1 {
+                        let skrillax_serde_some = u8::read_from(reader)?;
+                        let #ident = if skrillax_serde_some == 1 {
                             #inner_ts
                             Some(#ident)
                         } else {
@@ -247,35 +247,35 @@ fn generate_reader_for_inner(ident: &Ident, type_name: &Type, ty: &UsedType) -> 
         },
         UsedType::String => {
             quote_spanned! { ident.span() =>
-                let len = u16::read_from(reader)?;
-                let mut bytes = Vec::with_capacity(len.into());
-                for _ in 0..len {
-                    bytes.push(u8::read_from(reader)?);
+                let skrillax_serde_len = u16::read_from(reader)?;
+                let mut skrillax_serde_bytes = Vec::with_capacity(skrillax_serde_len.into());
+                for _ in 0..skrillax_serde_len {
+                    skrillax_serde_bytes.push(u8::read_from(reader)?);
                 }
-                let #ident = String::from_utf8(bytes)?;
+                let #ident = String::from_utf8(skrillax_serde_bytes)?;
             }
         },
         UsedType::Array(len) => {
             quote_spanned! { ident.span() =>
-                let mut bytes = [0u8; #len];
-                reader.read_exact(bytes)?;
-                let #ident = bytes;
+                let mut skrillax_serde_bytes = [0u8; #len];
+                reader.read_exact(skrillax_serde_bytes)?;
+                let #ident = skrillax_serde_bytes;
             }
         },
         UsedType::Collection(inner) => {
             quote_spanned! { ident.span() =>
-                let size = u8::read_from(reader)?;
-                let mut items = Vec::with_capacity(size.into());
+                let skrillax_serde_size = u8::read_from(reader)?;
+                let mut skrillax_serde_items = Vec::with_capacity(skrillax_serde_size.into());
                 for _ in 0..size {
-                    items.push(#inner::read_from(reader)?);
+                    skrillax_serde_items.push(#inner::read_from(reader)?);
                 }
-                let #ident = items;
+                let #ident = skrillax_serde_items;
             }
         },
         UsedType::Option(inner) => {
             quote_spanned! { ident.span() =>
-                let some = u8::read_from(reader)?;
-                let #ident = if some == 1 {
+                let skrillax_serde_some = u8::read_from(reader)?;
+                let #ident = if skrillax_serde_some == 1 {
                     Some(#inner::read_from(reader)?)
                 } else {
                     None

@@ -59,13 +59,13 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
         UsedType::String => {
             let content = match args.size.unwrap_or(1) {
                 1 => quote! {
-                    for byte in #ident.as_bytes() {
-                        byte.write_to(writer);
+                    for skrillax_serde_byte in #ident.as_bytes() {
+                        skrillax_serde_byte.write_to(writer);
                     }
                 },
                 2 => quote! {
-                    for utf_char in #ident.encode_utf16() {
-                        utf_char.write_to(writer);
+                    for skrillax_serde_utf_char in #ident.encode_utf16() {
+                        skrillax_serde_utf_char.write_to(writer);
                     }
                 },
                 _ => abort!(field, "Unknown String length"),
@@ -77,8 +77,8 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
         },
         UsedType::Array(_) => {
             quote_spanned! {field.span() =>
-                for inner in #ident {
-                    inner.write_to(writer);
+                for skrillax_serde_inner in #ident {
+                    skrillax_serde_inner.write_to(writer);
                 }
             }
         },
@@ -86,11 +86,11 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
             let length_type = args.list_type.as_deref().unwrap_or(DEFAULT_LIST_TYPE);
             // TODO: this does not handle double length strings.
             let inner_ty = match get_type_of(inner) {
-                UsedType::Primitive => quote!(inner.write_to(writer)),
+                UsedType::Primitive => quote!(skrillax_serde_inner.write_to(writer)),
                 UsedType::String => quote! {
-                    (inner.len() as u16).write_to(writer);
-                    for byte in inner.as_bytes() {
-                        byte.write_to(writer);
+                    (skrillax_serde_inner.len() as u16).write_to(writer);
+                    for skrillax_serde_byte in skrillax_serde_inner.as_bytes() {
+                        skrillax_serde_byte.write_to(writer);
                     }
                 },
                 _ => abort!(field, "Cannot nest collection-like types"),
@@ -101,7 +101,7 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
                 let continue_lit = get_variant_value(&ident, 1, size);
                 let break_lit = get_variant_value(&ident, 2, size);
                 quote_spanned! {field.span() =>
-                    for inner in #ident.iter() {
+                    for skrillax_serde_inner in #ident.iter() {
                         #continue_lit.write_to(writer);
                         #inner_ty;
                     }
@@ -111,7 +111,7 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
                 let continue_lit = get_variant_value(&ident, 1, size);
                 let break_lit = get_variant_value(&ident, 0, size);
                 quote_spanned! {field.span() =>
-                    for inner in #ident.iter() {
+                    for skrillax_serde_inner in #ident.iter() {
                         #continue_lit.write_to(writer);
                         #inner_ty;
                     }
@@ -127,13 +127,13 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
                 };
                 quote_spanned! {field.span() =>
                     (#ident.len() as #size_type).write_to(writer);
-                    for inner in #ident.iter() {
+                    for skrillax_serde_inner in #ident.iter() {
                         #inner_ty;
                     }
                 }
             } else {
                 quote_spanned! {field.span() =>
-                    for inner in #ident.iter() {
+                    for skrillax_serde_inner in #ident.iter() {
                         #inner_ty;
                     }
                 }
@@ -142,11 +142,11 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
         UsedType::Option(inner) => {
             // TODO: this does not handle double length strings.
             let inner_ty = match get_type_of(inner) {
-                UsedType::Primitive => quote!(inner.write_to(writer)),
+                UsedType::Primitive => quote!(skrillax_serde_inner.write_to(writer)),
                 UsedType::String => quote! {
-                    (inner.len() as u16).write_to(writer);
-                    for byte in inner.as_bytes() {
-                        byte.write_to(writer);
+                    (skrillax_serde_inner.len() as u16).write_to(writer);
+                    for skrillax_serde_byte in skrillax_serde_inner.as_bytes() {
+                        skrillax_serde_byte.write_to(writer);
                     }
                 },
                 _ => abort!(field, "Cannot nest collection-like types"),
@@ -154,7 +154,7 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
             if args.when.is_some() || args.size.unwrap_or(1) == 0 {
                 quote_spanned! {field.span() =>
                     match &#ident {
-                        Some(inner) => {
+                        Some(skrillax_serde_inner) => {
                             #inner_ty;
                         },
                         None => {},
@@ -163,7 +163,7 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
             } else {
                 quote_spanned! {field.span() =>
                     match &#ident {
-                        Some(inner) => {
+                        Some(skrillax_serde_inner) => {
                             1u8.write_to(writer);
                             #inner_ty;
                         },
