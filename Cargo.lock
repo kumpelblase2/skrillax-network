@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "skrillax-packet"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "byteorder",
  "bytes",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "skrillax-protocol"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "skrillax-packet",
  "skrillax-serde",
@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "skrillax-serde"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "byteorder",
  "bytes",
@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "skrillax-serde-derive"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "darling",
  "proc-macro-error",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "skrillax-stream"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bitflags",
  "byteorder",

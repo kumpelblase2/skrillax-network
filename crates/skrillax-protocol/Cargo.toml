@@ -1,6 +1,6 @@
 [package]
 name = "skrillax-protocol"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["kumpelblase2"]
 description = "Macro to build up a protocol for use with skrillax-stream"
@@ -11,13 +11,13 @@ keywords = ["silkroad", "protocol", "macro"]
 
 
 [dependencies]
-skrillax-packet = { version = "0.2.0", path = "../skrillax-packet" }
-skrillax-stream = { version = "0.1.0", path = "../skrillax-stream" }
+skrillax-packet = { version = "0.3.0", path = "../skrillax-packet" }
+skrillax-stream = { version = "0.2.0", path = "../skrillax-stream" }
 
 [dev-dependencies]
-skrillax-packet = { version = "0.2.0", path = "../skrillax-packet", features = [
+skrillax-packet = { version = "0.3.0", path = "../skrillax-packet", features = [
     "derive",
 ] }
-skrillax-serde = { version = "0.1.1", path = "../skrillax-serde", features = [
+skrillax-serde = { version = "0.2.0", path = "../skrillax-serde", features = [
     "derive",
 ] }
