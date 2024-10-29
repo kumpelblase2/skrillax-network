@@ -18,5 +18,5 @@ chrono = ["dep:chrono"]
 bytes.workspace = true
 byteorder.workspace = true
 skrillax-serde-derive = { path = "../skrillax-serde-derive", version = "0.2.0", optional = true }
-chrono = { version = "^0.4.32", optional = true }
+chrono = { version = "^0.4.38", optional = true }
 thiserror.workspace = true
