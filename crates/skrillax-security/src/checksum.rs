@@ -35,8 +35,8 @@ const BASE_TABLE: [u32; 256] = [
     0xB366722E, 0xC4614AB8, 0x5D381B02, 0x2B6F2B94, 0xB4CBBE37, 0xC3CC8EA1, 0x5A0DDF1B, 0x2D02ED8D,
 ];
 
-fn generate_table() -> [u32; 256 * 256] {
-    let mut final_table = [0u32; 256 * 256];
+fn generate_table() -> Box<[u32]> {
+    let mut final_table = vec![0u32; 256 * 256];
     let mut current_index = 0;
 
     for edx in &BASE_TABLE {
@@ -60,10 +60,10 @@ fn generate_table() -> [u32; 256 * 256] {
         }
     }
 
-    final_table
+    final_table.into_boxed_slice()
 }
 
-static EXPANDED_TABLE: OnceLock<[u32; 256 * 256]> = OnceLock::new();
+static EXPANDED_TABLE: OnceLock<Box<[u32]>> = OnceLock::new();
 
 /// Generates a CRC checksum according to the algorithm used in Silkroad Online.
 ///
@@ -136,7 +136,7 @@ impl Checksum {
 pub struct ChecksumBuilder<'a> {
     seed: u32,
     current_checksum: u32,
-    table: &'a [u32; 256 * 256],
+    table: &'a [u32],
 }
 
 impl<'a> ChecksumBuilder<'a> {
