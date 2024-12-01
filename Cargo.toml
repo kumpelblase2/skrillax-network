@@ -3,6 +3,6 @@ members = ["crates/*", "examples/*"]
 resolver = "2"
 
 [workspace.dependencies]
-bytes = "1.6"
+bytes = "1.9"
 byteorder = "1.5"
 thiserror = "1.0"
