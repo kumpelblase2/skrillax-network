@@ -16,7 +16,7 @@ bytes.workspace = true
 thiserror.workspace = true
 tokio-util = { version = "0.7", features = ["codec"] }
 log = "0.4"
-tokio = { version = "1.37", features = ["net"] }
+tokio = { version = "1.42", features = ["net"] }
 crossbeam-channel = "0.5"
 skrillax-serde = { path = "../skrillax-serde", features = [
     "derive",
@@ -30,4 +30,4 @@ futures = "0.3"
 bitflags = "2.5"
 
 [dev-dependencies]
-tokio = { version = "1.37", features = ["rt", "net", "macros"] }
+tokio = { version = "1.42", features = ["rt", "net", "macros"] }
