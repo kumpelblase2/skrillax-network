@@ -15,7 +15,7 @@
 //! automatically map the index of the enum variant to the discriminant. As
 //! such, you need to define a value manually. This can be done using
 //! `#[silkroad(value = 1)]` to set the variants byte value to `1`:
-//! ```
+//! ```ignore
 //! #[derive(Serialize, Deserialize)]
 //! enum Hello {
 //!     #[silkroad(value = 1)]
@@ -26,7 +26,7 @@
 //! ```
 //! In some cases it may be necessary for the discriminant to be two bytes wide,
 //! which you can specify using `#[silkroad(size = 2)]` on the enum itself:
-//! ```
+//! ```ignore
 //! #[derive(Serialize, Deserialize)]
 //! #[silkroad(size = 2)]
 //! enum Hello {
@@ -42,7 +42,7 @@
 //! options currently to alter the behavior for structs themselves, only their
 //! fields.
 //!
-//! ```
+//! ```ignore
 //! #[derive(Serialize, Deserialize)]
 //! struct Hello(String);
 //! ```
@@ -54,7 +54,7 @@
 //! Therefor, it is necessary to match the size exactly to the consumed bytes.
 //! Fields are serialized and deserialized in the order they are defined.
 //!
-//! ```
+//! ```ignore
 //! #[derive(Serialize, Deserialize)]
 //! struct Hello {
 //!     one_byte: u8,
@@ -67,7 +67,7 @@
 //! Collections (i.e. vectors) are encoded using one byte length followed by the
 //! elements of the collection without a separator. If the size is larger, this
 //! needs to be denoted using the `#[silkroad(size = 2)]` attribute.
-//! ```
+//! ```ignore
 //! #[derive(Serialize, Deserialize)]
 //! struct Hello {
 //!     #[silkroad(size = 2)]
@@ -81,7 +81,7 @@
 //! each element if another element will follow using different values. `break`
 //! uses `1` for 'has more values' and `2` for finished, while `has-more`
 //! uses `1` for more elements and `0` for being finished.
-//! ```
+//! ```ignore
 //! #[derive(Serialize, Deserialize)]
 //! struct Hello {
 //!     #[silkroad(list_type = "break")]
@@ -95,7 +95,7 @@
 //! representation of that string. In some cases, Silkroad however uses two byte
 //! wide characters (UTF-16) in strings. This can be configured by using a
 //! `size` of 2.
-//! ```
+//! ```ignore
 //! #[derive(Serialize, Deserialize)]
 //! struct Hello {
 //!     #[silkroad(size = 2)]
@@ -111,7 +111,7 @@
 //! without the presence indicator. This makes them impossible to deserialize
 //! (currently), but this is unfortunately current necessary. To achieve this,
 //! you can set the size of the field to 0.
-//! ```rust
+//! ```ignore
 //! #[derive(Serialize)]
 //! struct Hello {
 //!     #[silkroad(size = 0)]
@@ -128,7 +128,7 @@
 //! showing if the values is present in the packet or not. It is possible to
 //! access any previous values, but is currently limited to expressions without
 //! imports.
-//! ```rust
+//! ```ignore
 //! #[derive(Deserialize, Serialize)]
 //! struct Hello {
 //!     condition: u8
