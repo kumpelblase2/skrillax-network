@@ -3,7 +3,9 @@ default:
 
 doc:
     cargo doc --no-deps
+
 test:
-    cargo nextest run
+    cargo nextest run && cargo test --doc
+
 fmt:
     cargo +nightly fmt
