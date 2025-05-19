@@ -9,6 +9,9 @@ repository = "https://git.eternalwings.de/tim/skrillax-network"
 categories = ["network-programming", "encoding"]
 keywords = ["silkroad", "packets"]
 
+[package.metadata.workspaces]
+independent = true
+
 [dependencies]
 thiserror.workspace = true
 bytes.workspace = true

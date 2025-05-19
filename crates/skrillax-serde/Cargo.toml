@@ -9,6 +9,9 @@ repository = "https://git.eternalwings.de/tim/skrillax-network"
 categories = ["encoding", "parser-implementations"]
 keywords = ["silkroad", "serde"]
 
+[package.metadata.workspaces]
+independent = true
+
 [features]
 default = ["chrono"]
 derive = ["dep:skrillax-serde-derive"]

@@ -9,6 +9,9 @@ repository = "https://git.eternalwings.de/tim/skrillax-network"
 categories = ["asynchronous", "network-programming"]
 keywords = ["silkroad", "tokio", "tcp", "stream"]
 
+[package.metadata.workspaces]
+independent = true
+
 [dependencies]
 skrillax-security = { path = "../skrillax-security", version = "0.1.0" }
 byteorder.workspace = true

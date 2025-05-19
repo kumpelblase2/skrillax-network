@@ -9,6 +9,9 @@ repository = "https://git.eternalwings.de/tim/skrillax-network"
 categories = ["network-programming", "cryptography"]
 keywords = ["silkroad", "security", "handshake"]
 
+[package.metadata.workspaces]
+independent = true
+
 [dependencies]
 blowfish = { version = "0.9.1" }
 bytes.workspace = true

@@ -9,6 +9,8 @@ repository = "https://git.eternalwings.de/tim/skrillax-network"
 categories = ["network-programming"]
 keywords = ["silkroad", "protocol", "macro"]
 
+[package.metadata.workspaces]
+independent = true
 
 [dependencies]
 skrillax-packet = { version = "0.3.0", path = "../skrillax-packet" }

@@ -9,6 +9,9 @@ repository = "https://git.eternalwings.de/tim/skrillax-network"
 categories = ["encoding", "network-programming", "parser-implementations"]
 keywords = ["silkroad", "codec"]
 
+[package.metadata.workspaces]
+independent = true
+
 [features]
 default = ["codec"]
 codec = ["dep:tokio-util"]

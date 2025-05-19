@@ -8,6 +8,9 @@ license = "MIT"
 repository = "https://git.eternalwings.de/tim/skrillax-network"
 keywords = ["silkroad", "serde"]
 
+[package.metadata.workspaces]
+independent = true
+
 [dependencies]
 darling = "0.20"
 proc-macro-error = "1"
