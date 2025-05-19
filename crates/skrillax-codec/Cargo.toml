@@ -20,3 +20,4 @@ codec = ["dep:tokio-util"]
 bytes.workspace = true
 byteorder.workspace = true
 tokio-util = { version = "0.7.13", features = ["codec"], optional = true }
+tracing = "0.1"

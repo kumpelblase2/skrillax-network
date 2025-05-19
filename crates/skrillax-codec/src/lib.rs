@@ -11,8 +11,12 @@
 //! possible to use this crate without using the codec by using the
 //! [SilkroadFrame]'s serialization and deserialization functions.
 
+mod hex_format;
+
+use crate::hex_format::Opcode;
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use tracing::debug;
 
 const MASSIVE_PACKET_OPCODE: u16 = 0x600D;
 const ENCRYPTED_ALIGNMENT: usize = 8;
@@ -170,6 +174,11 @@ impl SilkroadFrame {
         let count = data[2];
         let crc = data[3];
 
+        debug!(
+            opcode = %Opcode(opcode),
+            "Packet received"
+        );
+
         if opcode == MASSIVE_PACKET_OPCODE {
             assert!(data.len() >= 5);
             let mode = data[4];
@@ -253,6 +262,12 @@ impl SilkroadFrame {
     /// itself.
     pub fn serialize(&self) -> Bytes {
         let mut output = BytesMut::with_capacity(self.packet_size());
+
+        debug!(
+            opcode = %self.opcode().map(|x| Opcode(x)).unwrap_or(Opcode(0)),
+            len = self.packet_size(),
+            "Sending packet"
+        );
 
         match &self {
             SilkroadFrame::Packet {
