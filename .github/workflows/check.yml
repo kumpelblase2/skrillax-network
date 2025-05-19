@@ -1,6 +1,6 @@
 on:
   push:
-    branches: [master]
+    branches: [ master ]
   pull_request:
 
 name: check
@@ -27,3 +27,9 @@ jobs:
           components: clippy
       - name: cargo clippy
         run: cargo clippy
+  semver-checks:
+    runs-on: ubuntu-latest
+    name: semver checks
+    steps:
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
