@@ -34,15 +34,15 @@ fn find_encrypted_length(given_length: usize) -> usize {
 
 /// A 'frame' denotes the most fundamental block of data that can be sent
 /// between the client and the server in Silkroad Online. Any and all operations
-/// or data exchanges are built on top of a kind of frame.
+/// or data exchanges are built on top of something like a frame.
 ///
 /// There are two categories of frames; normal frames and massive frames. A
 /// normal frame is the most common frame denoting a single operation using a
 /// specified opcode. This frame may be encrypted, causing everything but the
 /// length to require decrypting before being usable. Massive frames are used to
 /// bundle similar operations together. A massive header is sent first,
-/// containing the amount of operations as well as their opcode, and is then
-/// followed by the specified amount of containers, which now only contain the
+/// containing the number of operations as well as their opcode, and is then
+/// followed by the specified number of containers, which now only contain the
 /// data. Thus, massive frames cannot be encrypted.
 ///
 /// Every frame, including an encrypted frame, contains two additional bytes:
@@ -50,7 +50,7 @@ fn find_encrypted_length(given_length: usize) -> usize {
 /// to check for bitflips/modifications and the count to prevent replay
 /// attacks.
 ///
-/// To read a frame from a bytestream, you can use the [SilkroadFrame::parse]
+/// To read a frame from a byte-stream, you can use the [SilkroadFrame::parse]
 /// function to try and parse a frame from those bytes:
 /// ```
 /// # use bytes::Bytes;
@@ -67,7 +67,7 @@ fn find_encrypted_length(given_length: usize) -> usize {
 /// );
 /// ```
 ///
-/// This works vice-versa, to write a frame into a byte stream, using
+/// This works vice versa, to write a frame into a byte stream, using
 /// [SilkroadFrame::serialize]:
 /// ```
 /// # use bytes::Bytes;
@@ -159,7 +159,7 @@ impl SilkroadFrame {
     /// consisting of a [SilkroadFrame::MassiveHeader] and multiple
     /// [SilkroadFrame::MassiveContainer]s.
     ///
-    /// This assumes the data is well-formed, i.e. first two bytes opcode, one
+    /// This assumes the data is well-formed, i.e., first two bytes opcode, one
     /// byte security count, one byte crc, and the rest data. If the data
     /// represents a massive frame, it's also expected that the massive
     /// information has the correct format. In other cases, this will
@@ -202,9 +202,10 @@ impl SilkroadFrame {
     }
 
     /// Computes the size that should be used for the length header field.
-    /// Depending on the type of frame this is either:
+    /// Depending on the type of frame, this is either:
     /// - The size of the contained data (basic frame)
-    /// - Encrypted size without header, but possibly padding (encrypted frame)
+    /// - Encrypted size without a header, but possibly padding (encrypted
+    ///   frame)
     /// - A fixed size (massive header frame)
     /// - Container and data size (massive container frame)
     pub fn content_size(&self) -> usize {
@@ -213,12 +214,12 @@ impl SilkroadFrame {
             SilkroadFrame::Encrypted { content_size, .. } => *content_size,
             SilkroadFrame::MassiveHeader { .. } => {
                 // Massive headers have a fixed length because they're always:
-                // 1 Byte 'is header', 2 Bytes 'amount of packets', 2 Bytes 'opcode', 1 Byte
+                // 1 Byte 'is header', 2 Bytes 'number of packets', 2 Bytes 'opcode', 1 Byte
                 // unknown
                 6
             },
             SilkroadFrame::MassiveContainer { inner, .. } => {
-                // 1 at the start to denote that this is container packet
+                // 1 at the start to denote that this is a container packet
                 // 1 in each content to denote there's more
                 1 + inner.len()
             },
@@ -316,7 +317,7 @@ mod codec {
     /// This implements [Encoder] and [Decoder] to be used in combination
     /// with tokio framed read/write. Essentially, this wraps the
     /// [SilkroadFrame::serialize] and [SilkroadFrame::parse] functions
-    /// to serialize & deserialize the frames.
+    /// to serialize and deserialize the frames.
     pub struct SilkroadCodec;
 
     impl Encoder<SilkroadFrame> for SilkroadCodec {

@@ -14,10 +14,10 @@
 //! ```
 //!
 //! The rest of this crate focuses around converting a [Packet] into a
-//! [SilkroadFrame], or vice-versa. This currently takes a small detour through
+//! [SilkroadFrame], or vice versa. This currently takes a small detour through
 //! using either an [IncomingPacket] or [OutgoingPacket], depending on the
 //! direction. This is done because we often first need to apply some kind of
-//! transformation to the frames, before we can easily turn them into structs
+//! transformation to the frames before we can easily turn them into structs
 //! representing the packet. This would include combining multiple massive
 //! frames into one large buffer as well as decrypting the content of frames to
 //! figure out their opcodes. Thus, the chain goes something like this, in a
@@ -92,7 +92,7 @@ pub trait Packet {
     /// Provides a more readable name for the given packet. This is usually just
     /// the struct name.
     const NAME: &'static str;
-    /// Defines if this packet is a massive packet, and should thus use massive
+    /// Defines if this packet is a massive packet and should thus use massive
     /// frames for transport.
     const MASSIVE: bool;
     /// Defines if this packet is an encrypted packet.
@@ -132,7 +132,7 @@ impl IncomingPacket {
 ///
 /// In turn, we still need to know what kind of frame it should end up as.
 /// Generally, one outgoing packet will result in a single frame, but
-/// multiple packets can be combined to a massive packet. This will
+/// multiple packets can be combined into a massive packet. This will
 /// span multiple frames, including an additional header.
 #[derive(Eq, PartialEq, Debug)]
 pub enum OutgoingPacket {
@@ -168,7 +168,7 @@ impl<T: AsPacket> From<T> for OutgoingPacket {
 /// Defines _something_ that can be created from a packet, after it has been
 /// received.
 ///
-/// Once a re-framing, decryption and other parts have completed, we want to
+/// Once the re-framing, decryption, and other parts have completed, we want to
 /// turn the contained data into a usable structure.
 ///
 /// The analog is [AsPacket].
@@ -178,8 +178,8 @@ pub trait TryFromPacket {
     /// already matched the opcode to `Self` and know it matches.
     ///
     /// `data` _may_ contain more data than necessary to form a single packet,
-    /// for example if we were inside a massive frame. Thus, we need to
-    /// return the amount of consumed bytes such that the remainder may be
+    /// for example, if we were inside a massive frame. Thus, we need to
+    /// return the number of consumed bytes such that the remainder may be
     /// used to create more elements of `Self` if the caller wants to.
     fn try_deserialize(data: &[u8]) -> Result<(usize, Self), PacketError>
     where
@@ -282,7 +282,7 @@ pub trait AsFrames {
     /// kinds and their respective frames. Since frames may be encrypted,
     /// this can optionally receive the security to be used. If no
     /// security is passed, but an encrypted packet is requested, this
-    /// may error.
+    /// may be an error.
     fn as_frames(&self, context: SecurityContext) -> Result<Vec<SilkroadFrame>, FramingError>;
 }
 
@@ -433,13 +433,13 @@ pub trait FromFrames {
     /// Try to turn _all_ frames into an incoming packet.
     ///
     /// This accepts a slice of frames, which is either a single packet frame
-    /// (plain or encrypted), or multiple frames representing a massive
+    /// (plain or encrypted) or multiple frames representing a massive
     /// packet. As such, this function does not return how many frames may
     /// have been consumed, as it is expected to have consumed all the given
     /// frames.
     ///
     /// It requires a security context such that it may validate and decrypt
-    /// frames, when the need arises. If no security is provided but an
+    /// frames when the need arises. If no security is provided but an
     /// encrypted frame is encountered, it will error.
     fn from_frames(
         frames: &[SilkroadFrame],
@@ -696,8 +696,8 @@ impl From<CheckBytesInitialization> for SecurityBytes {
 /// may need all three elements: [SilkroadEncryption], [MessageCounter], and
 /// [Checksum]. However, it is possible for either the [SilkroadEncryption] to
 /// be absent and/or both [MessageCounter] and [Checksum] to be absent. Thus,
-/// [MessageCounter] and [Checksum] are tied together. This struct does not
-/// really provide much in and of itself, but it is handy as it might be used in
+/// [MessageCounter] and [Checksum] are tied together. This struct really
+/// provides little in and of itself, but it is handy as it might be used in
 /// different layers in the stack to refer to.
 #[derive(Default)]
 pub struct SecurityContext<'a> {

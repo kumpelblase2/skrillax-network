@@ -16,7 +16,7 @@ use tokio_util::codec::{FramedRead, FramedWrite};
 
 /// Errors for possible problems writing packets.
 ///
-/// When writing packets to be sent over the wire a few issues can appear,
+/// When writing packets to be sent over the wire, a few issues can appear,
 /// which are represented by this error.
 #[derive(Debug, Error)]
 pub enum OutStreamError {
@@ -56,8 +56,13 @@ pub enum InStreamError {
     UnmatchedOpcode(u16),
 }
 
-///
+/// An [InputProtocol] is a trait which can be used to deserialize a single
+/// operation given its opcode. A protocol is assumed to support multiple
+/// opcodes as it is assumed to be applicable to any operation present on
+/// a stream. Generally, [InputProtocol::Proto] will be an enum to reflect
+/// that fact.
 pub trait InputProtocol {
+    /// The type of all possible values we can create
     type Proto: Send;
 
     fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self::Proto), InStreamError>;
@@ -228,7 +233,7 @@ where
     /// Enables encryption for this stream.
     ///
     /// Upon starting a connection, a stream will not be encrypted. Only after
-    /// the handshake finished will the encryption be present. This should
+    /// the handshake is finished will the encryption be present. This should
     /// generally be set implicitly by the handshake protocol, but it is
     /// possible to manually configure it.
     ///
@@ -271,16 +276,16 @@ where
         SecurityContext::new(self.encryption(), self.security_bytes())
     }
 
-    /// Read next packet and handle re-framing.
+    /// Read the next packet and handle re-framing.
     ///
-    /// [skrillax_codec] deals on single packets (i.e. frames) and some packets
-    /// may span multiple frames. It does not attempt to collect those
-    /// frames where appropriate and instead pushes the problem up the
+    /// [skrillax_codec] deals on single packets (i.e., frames), and some
+    /// packets may span multiple frames. It does not attempt to collect
+    /// those frames where appropriate and instead pushes the problem up the
     /// abstraction chain. Thus, at the current abstraction level we're
     /// performing this merging of frames into logical packets. Thus, it is
     /// possible the resulting [IncomingPacket] is actually a massive packet
     /// containing multiple operations inside it. At this point we can't
-    /// split that into the individual operations, because we don't know the
+    /// split that into the individual operations because we don't know the
     /// length of those operations.
     ///
     /// This should only be necessary if you're not interested in actual packet

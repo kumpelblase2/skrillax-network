@@ -36,14 +36,14 @@ macro_rules! __match_protocol_opcode {
 /// protocols. This protocol will then be represented as an enum, where
 /// each of the packets/protocols is its own variant. With this enum,
 /// all the necessary traits for usage with [skrillax_stream] will then
-/// be implemented. In particular, the following traits will be
-/// implement by the generated enum:
+/// be implemented. In particular, the generated enum will
+/// implement the following traits:
 /// - [InputProtocol](skrillax_stream::InputProtocol)
 /// - [OutputProtocol](skrillax_stream::OutputProtocol)
 /// - [From], to create the protocol from a variant value
 /// - [TryFrom], to extract a variant value from the protocol
 ///
-/// The basic macro invokation looks like this:
+/// The basic macro invocation looks like this:
 /// ```text
 /// define_protocol! { MyProtocolName =>
 ///     MyPacket,
@@ -60,10 +60,10 @@ macro_rules! __match_protocol_opcode {
 /// an implementation for
 /// [InputProtocol](skrillax_stream::InputProtocol) &
 /// [OutputProtocol](skrillax_stream::OutputProtocol), it requires all
-/// packets _and_ protocols to be both `Serialize` & `Derserialize`. For
-/// some packets, that may not be possible, for example when there's a
+/// packets _and_ protocols to be both `Serialize` & `Deserialize`. For
+/// some packets, that may not be possible, for example, when there's a
 /// zero-length optional field. Any protocols those packets are included
-/// would also automatically not be both serialize and deserialize and
+/// would also automatically not be both `Serialize` and `Deserialize` and
 /// could thus also not be used.
 #[macro_export]
 macro_rules! define_protocol {
@@ -87,7 +87,7 @@ macro_rules! define_protocol {
     };
 }
 
-/// Defines an "outbound" protocol, i.e. a protocol we only care about
+/// Defines an "outbound" protocol, i.e., a protocol we only care about
 /// sending out to another party.
 #[macro_export]
 macro_rules! define_outbound_protocol {
@@ -107,7 +107,7 @@ macro_rules! define_outbound_protocol {
     }
 }
 
-/// Defines an "inbound" protocol, i.e. a protocol we only care about
+/// Defines an "inbound" protocol, i.e., a protocol we only care about
 /// receiving from another party.
 #[macro_export]
 macro_rules! define_inbound_protocol {
