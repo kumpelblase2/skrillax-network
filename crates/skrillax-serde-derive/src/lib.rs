@@ -172,7 +172,9 @@ pub(crate) struct SilkroadArgs {
 #[proc_macro_derive(Serialize, attributes(silkroad))]
 pub fn derive_serialize(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input);
-    let args = SilkroadArgs::from_derive_input(&input).unwrap();
+    let Ok(args) = SilkroadArgs::from_derive_input(&input) else {
+        abort!(input, "Failed to parse silkroad arguments.")
+    };
     let DeriveInput { ident, data, .. } = input;
 
     let output = serialize(&ident, &data, args);
@@ -199,7 +201,9 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Deserialize, attributes(silkroad))]
 pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input);
-    let args = SilkroadArgs::from_derive_input(&input).unwrap();
+    let Ok(args) = SilkroadArgs::from_derive_input(&input) else {
+        abort!(input, "Failed to parse silkroad arguments.")
+    };
     let DeriveInput { ident, data, .. } = input;
     let output = deserialize(&ident, &data, args);
     let output = quote! {
@@ -226,7 +230,9 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(ByteSize, attributes(silkroad))]
 pub fn derive_size(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input);
-    let args = SilkroadArgs::from_derive_input(&input).unwrap();
+    let Ok(args) = SilkroadArgs::from_derive_input(&input) else {
+        abort!(input, "Failed to parse silkroad arguments.")
+    };
     let DeriveInput { ident, data, .. } = input;
     let output = size(&ident, &data, args);
     let output = quote! {
@@ -269,7 +275,13 @@ pub(crate) fn get_type_of(ty: &Type) -> UsedType {
             {
                 return UsedType::String;
             } else if full_name == "Vec" {
-                match path.path.segments.last().unwrap().arguments {
+                match path
+                    .path
+                    .segments
+                    .last()
+                    .expect("Should have a last element given we have a non-empty type name")
+                    .arguments
+                {
                     PathArguments::None => {
                         abort!(ty, "Missing generic parameters for collection type.")
                     },
@@ -289,7 +301,13 @@ pub(crate) fn get_type_of(ty: &Type) -> UsedType {
                     },
                 }
             } else if full_name == "Option" {
-                match path.path.segments.last().unwrap().arguments {
+                match path
+                    .path
+                    .segments
+                    .last()
+                    .expect("Should have a last element given we have a non-empty type name")
+                    .arguments
+                {
                     PathArguments::None => {
                         abort!(ty, "Missing generic parameters for option type.")
                     },
@@ -324,5 +342,5 @@ fn get_variant_value<T: Spanned + ToTokens>(source: &T, value: usize, size: usiz
         8 => "u64",
         _ => abort!(source, "Unknown size"),
     };
-    syn::parse_str(&format!("{}{}", value, ty)).unwrap()
+    syn::parse_str(&format!("{}{}", value, ty)).expect("Should be able to parse a typed number")
 }

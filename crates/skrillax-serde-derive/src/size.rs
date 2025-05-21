@@ -43,7 +43,12 @@ pub(crate) fn size(ident: &Ident, data: &Data, args: SilkroadArgs) -> TokenStrea
                         let idents = named
                             .named
                             .iter()
-                            .map(|field| field.ident.as_ref().unwrap())
+                            .map(|field| {
+                                field
+                                    .ident
+                                    .as_ref()
+                                    .expect("Field of named struct should have a name")
+                            })
                             .collect::<Vec<&Ident>>();
                         let content = named
                             .named
@@ -95,7 +100,9 @@ pub(crate) fn size(ident: &Ident, data: &Data, args: SilkroadArgs) -> TokenStrea
 
 fn generate_size_for(field: &Field, ident: TokenStream) -> TokenStream {
     let ty = get_type_of(&field.ty);
-    let field_args = FieldArgs::from_attributes(&field.attrs).unwrap();
+    let Ok(field_args) = FieldArgs::from_attributes(&field.attrs) else {
+        abort!(field, "Could not parse field attributes.");
+    };
     match ty {
         UsedType::Primitive => {
             quote_spanned!(field.span() => #ident.byte_size())

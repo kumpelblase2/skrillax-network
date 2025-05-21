@@ -11,7 +11,10 @@ pub(crate) fn serialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Token
         Data::Struct(ref data) => match data.fields {
             Fields::Named(ref fields) => {
                 let content = fields.named.iter().map(|field| {
-                    let ident = field.ident.as_ref().unwrap();
+                    let ident = field
+                        .ident
+                        .as_ref()
+                        .expect("Field of named struct should have a name");
                     generate_for_field(field, quote!(self.#ident))
                 });
                 quote_spanned! { ident.span() =>
@@ -49,7 +52,9 @@ pub(crate) fn serialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Token
 
 fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
     let ty = get_type_of(&field.ty);
-    let args = FieldArgs::from_attributes(&field.attrs).unwrap();
+    let Ok(args) = FieldArgs::from_attributes(&field.attrs) else {
+        abort!(field, "Could not parse field attributes.");
+    };
     match ty {
         UsedType::Primitive => {
             quote_spanned! {field.span() =>
@@ -186,7 +191,9 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
 }
 
 fn generate_for_variant(ident: &Ident, variant: &Variant, size: usize) -> TokenStream {
-    let attributes = FieldArgs::from_attributes(&variant.attrs).unwrap();
+    let Ok(attributes) = FieldArgs::from_attributes(&variant.attrs) else {
+        abort!(variant, "Could not parse variant attributes.");
+    };
     let variant_name = &variant.ident;
     let value_output = if size > 0 {
         let value = attributes
@@ -204,7 +211,12 @@ fn generate_for_variant(ident: &Ident, variant: &Variant, size: usize) -> TokenS
             let idents = fields
                 .named
                 .iter()
-                .map(|field| field.ident.as_ref().unwrap())
+                .map(|field| {
+                    field
+                        .ident
+                        .as_ref()
+                        .expect("Field of named struct should have a name")
+                })
                 .collect::<Vec<&Ident>>();
 
             let content = fields

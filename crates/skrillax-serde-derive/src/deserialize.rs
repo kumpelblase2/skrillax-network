@@ -13,12 +13,22 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Tok
                 let idents = named
                     .named
                     .iter()
-                    .map(|field| field.ident.as_ref().unwrap())
+                    .map(|field| {
+                        field
+                            .ident
+                            .as_ref()
+                            .expect("Field of named struct should have a name")
+                    })
                     .collect::<Vec<&Ident>>();
-                let content = named
-                    .named
-                    .iter()
-                    .map(|field| generate_reader_for(field, field.ident.as_ref().unwrap()));
+                let content = named.named.iter().map(|field| {
+                    generate_reader_for(
+                        field,
+                        field
+                            .ident
+                            .as_ref()
+                            .expect("Field of named struct should have a name"),
+                    )
+                });
                 quote_spanned! {ident.span()=>
                     #(#content)*
                     Ok(#ident { #(#idents),* })
@@ -120,7 +130,9 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Tok
 fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
     let ty = get_type_of(&field.ty);
     let type_name = &field.ty;
-    let args = FieldArgs::from_attributes(&field.attrs).unwrap();
+    let Ok(args) = FieldArgs::from_attributes(&field.attrs) else {
+        abort!(field, "Could not parse attrs for field.");
+    };
     match ty {
         UsedType::Primitive => {
             quote_spanned! { field.span() =>
