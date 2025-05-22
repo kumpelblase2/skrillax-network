@@ -23,6 +23,7 @@
 //! [handshake::PassiveSecuritySetup] for the server point of view and the
 //! client respectively.
 
+pub mod context;
 pub mod handshake;
 pub mod stream;
 
@@ -30,3 +31,4 @@ pub mod packet {
     pub use skrillax_packet::*;
 }
 pub use stream::InputProtocol;
+pub use stream::OutputProtocol;
