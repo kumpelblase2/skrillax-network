@@ -58,32 +58,32 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
     match ty {
         UsedType::Primitive => {
             quote_spanned! {field.span() =>
-                #ident.write_to(writer);
+                #ident.write_to(writer, ctx);
             }
         },
         UsedType::String => {
             let content = match args.size.unwrap_or(1) {
                 1 => quote! {
                     for skrillax_serde_byte in #ident.as_bytes() {
-                        skrillax_serde_byte.write_to(writer);
+                        skrillax_serde_byte.write_to(writer, ctx);
                     }
                 },
                 2 => quote! {
                     for skrillax_serde_utf_char in #ident.encode_utf16() {
-                        skrillax_serde_utf_char.write_to(writer);
+                        skrillax_serde_utf_char.write_to(writer, ctx);
                     }
                 },
                 _ => abort!(field, "Unknown String length"),
             };
             quote_spanned! {field.span() =>
-                (#ident.len() as u16).write_to(writer);
+                (#ident.len() as u16).write_to(writer, ctx);
                 #content
             }
         },
         UsedType::Array(_) => {
             quote_spanned! {field.span() =>
                 for skrillax_serde_inner in #ident {
-                    skrillax_serde_inner.write_to(writer);
+                    skrillax_serde_inner.write_to(writer, ctx);
                 }
             }
         },
@@ -91,11 +91,11 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
             let length_type = args.list_type.as_deref().unwrap_or(DEFAULT_LIST_TYPE);
             // TODO: this does not handle double length strings.
             let inner_ty = match get_type_of(inner) {
-                UsedType::Primitive => quote!(skrillax_serde_inner.write_to(writer)),
+                UsedType::Primitive => quote!(skrillax_serde_inner.write_to(writer, ctx)),
                 UsedType::String => quote! {
-                    (skrillax_serde_inner.len() as u16).write_to(writer);
+                    (skrillax_serde_inner.len() as u16).write_to(writer, ctx);
                     for skrillax_serde_byte in skrillax_serde_inner.as_bytes() {
-                        skrillax_serde_byte.write_to(writer);
+                        skrillax_serde_byte.write_to(writer, ctx);
                     }
                 },
                 _ => abort!(field, "Cannot nest collection-like types"),
@@ -107,20 +107,20 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
                 let break_lit = get_variant_value(&ident, 2, size);
                 quote_spanned! {field.span() =>
                     for skrillax_serde_inner in #ident.iter() {
-                        #continue_lit.write_to(writer);
+                        #continue_lit.write_to(writer, ctx);
                         #inner_ty;
                     }
-                    #break_lit.write_to(writer);
+                    #break_lit.write_to(writer, ctx);
                 }
             } else if length_type == "has-more" {
                 let continue_lit = get_variant_value(&ident, 1, size);
                 let break_lit = get_variant_value(&ident, 0, size);
                 quote_spanned! {field.span() =>
                     for skrillax_serde_inner in #ident.iter() {
-                        #continue_lit.write_to(writer);
+                        #continue_lit.write_to(writer, ctx);
                         #inner_ty;
                     }
-                    #break_lit.write_to(writer);
+                    #break_lit.write_to(writer, ctx);
                 }
             } else if length_type == "length" {
                 let size_type = match size {
@@ -131,7 +131,7 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
                     _ => abort!(ident, "Could not determine size for list."),
                 };
                 quote_spanned! {field.span() =>
-                    (#ident.len() as #size_type).write_to(writer);
+                    (#ident.len() as #size_type).write_to(writer, ctx);
                     for skrillax_serde_inner in #ident.iter() {
                         #inner_ty;
                     }
@@ -147,11 +147,11 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
         UsedType::Option(inner) => {
             // TODO: this does not handle double length strings.
             let inner_ty = match get_type_of(inner) {
-                UsedType::Primitive => quote!(skrillax_serde_inner.write_to(writer)),
+                UsedType::Primitive => quote!(skrillax_serde_inner.write_to(writer, ctx)),
                 UsedType::String => quote! {
-                    (skrillax_serde_inner.len() as u16).write_to(writer);
+                    (skrillax_serde_inner.len() as u16).write_to(writer, ctx);
                     for skrillax_serde_byte in skrillax_serde_inner.as_bytes() {
-                        skrillax_serde_byte.write_to(writer);
+                        skrillax_serde_byte.write_to(writer, ctx);
                     }
                 },
                 _ => abort!(field, "Cannot nest collection-like types"),
@@ -169,10 +169,10 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
                 quote_spanned! {field.span() =>
                     match &#ident {
                         Some(skrillax_serde_inner) => {
-                            1u8.write_to(writer);
+                            1u8.write_to(writer, ctx);
                             #inner_ty;
                         },
-                        None => 0u8.write_to(writer),
+                        None => 0u8.write_to(writer, ctx),
                     }
                 }
             }
@@ -184,7 +184,7 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
 
             quote_spanned! {field.span() =>
                 let (#(#def),*) = &#ident;
-                #(#def.write_to(writer);)*
+                #(#def.write_to(writer, ctx);)*
             }
         },
     }
@@ -201,7 +201,7 @@ fn generate_for_variant(ident: &Ident, variant: &Variant, size: usize) -> TokenS
             .expect("When size is not zero, value should be set.");
         let value = get_variant_value(variant_name, value, size);
         quote_spanned! { variant_name.span() =>
-            #value.write_to(writer);
+            #value.write_to(writer, ctx);
         }
     } else {
         quote!()

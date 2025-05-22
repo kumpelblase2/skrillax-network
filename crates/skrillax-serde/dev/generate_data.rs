@@ -1,6 +1,6 @@
 use bytes::BytesMut;
 use rand::Rng;
-use skrillax_serde::{ByteSize, Deserialize, Serialize};
+use skrillax_serde::{ByteSize, Deserialize, SerdeContext, Serialize};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -84,9 +84,10 @@ fn main() {
 
     let items_count = 100;
     let mut buffer = BytesMut::new();
+    let ctx = SerdeContext::default();
     for _ in 0..items_count {
         let root = generate_random_root();
-        root.write_to_end(&mut buffer);
+        root.write_to_end(&mut buffer, &ctx);
     }
 
     let mut file = File::create(data_path).expect("failed to create data file");

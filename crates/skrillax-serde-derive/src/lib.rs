@@ -160,6 +160,7 @@ pub(crate) struct FieldArgs {
     size: Option<usize>,
     value: Option<usize>,
     when: Option<String>,
+    calculate: Option<String>,
 }
 
 #[derive(FromDeriveInput)]
@@ -181,7 +182,7 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
 
     let output = quote! {
         impl skrillax_serde::Serialize for #ident {
-            fn write_to(&self, mut writer: &mut ::skrillax_serde::__internal::bytes::BytesMut) {
+            fn write_to(&self, mut writer: &mut ::skrillax_serde::__internal::bytes::BytesMut, ctx: &skrillax_serde::SerdeContext) {
                 #output
             }
         }
@@ -189,7 +190,7 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
         impl From<#ident> for ::skrillax_serde::__internal::bytes::Bytes {
             fn from(packet: #ident) -> ::skrillax_serde::__internal::bytes::Bytes {
                 let mut buffer = ::skrillax_serde::__internal::bytes::BytesMut::with_capacity(packet.byte_size());
-                packet.write_to(&mut buffer);
+                packet.write_to(&mut buffer, &skrillax_serde::SerdeContext::default());
                 buffer.freeze()
             }
         }
@@ -208,7 +209,7 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     let output = deserialize(&ident, &data, args);
     let output = quote! {
         impl skrillax_serde::Deserialize for #ident {
-            fn read_from<T: std::io::Read + ::skrillax_serde::__internal::byteorder::ReadBytesExt>(mut reader: &mut T) -> Result<Self, skrillax_serde::SerializationError> {
+            fn read_from<T: std::io::Read + ::skrillax_serde::__internal::byteorder::ReadBytesExt>(mut reader: &mut T, ctx: &skrillax_serde::SerdeContext) -> Result<Self, skrillax_serde::SerializationError> {
                 #output
             }
         }
@@ -219,7 +220,7 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
             fn try_from(data: ::skrillax_serde::__internal::bytes::Bytes) -> Result<Self, Self::Error> {
                 use ::skrillax_serde::__internal::bytes::Buf;
                 let mut data_reader = data.reader();
-                #ident::read_from(&mut data_reader)
+                #ident::read_from(&mut data_reader, &skrillax_serde::SerdeContext::default())
             }
         }
     };

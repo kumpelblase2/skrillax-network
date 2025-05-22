@@ -1,6 +1,6 @@
 use bytes::BytesMut;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use skrillax_serde::{ByteSize, Deserialize, Serialize};
+use skrillax_serde::{ByteSize, Deserialize, SerdeContext, Serialize};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -48,15 +48,19 @@ fn bench_deserialization(c: &mut Criterion) {
 
     let mut cursor = std::io::Cursor::new(&encoded_data);
     let mut roots = Vec::with_capacity(items_count);
+    let ctx = SerdeContext::default();
     for _ in 0..items_count {
-        roots.push(RootStruct::read_from(&mut cursor).expect("failed to deserialize for setup"));
+        roots.push(
+            RootStruct::read_from(&mut cursor, &ctx).expect("failed to deserialize for setup"),
+        );
     }
 
     c.bench_function("deserialize_root_struct", |b| {
         b.iter(|| {
             let mut cursor = std::io::Cursor::new(&encoded_data);
+            let ctx = SerdeContext::default();
             for _ in 0..items_count {
-                black_box(RootStruct::read_from(&mut cursor)).expect("failed to deserialize");
+                black_box(RootStruct::read_from(&mut cursor, &ctx)).expect("failed to deserialize");
             }
         })
     });
@@ -64,9 +68,10 @@ fn bench_deserialization(c: &mut Criterion) {
     c.bench_function("serialize_root_struct", |b| {
         let total_size: usize = roots.iter().map(|r| r.byte_size()).sum();
         let mut buffer = BytesMut::with_capacity(total_size);
+        let ctx = SerdeContext::default();
         b.iter(|| {
             for root in &roots {
-                black_box(root.write_to_end(&mut buffer));
+                black_box(root.write_to_end(&mut buffer, &ctx));
             }
         })
     });

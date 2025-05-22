@@ -9,13 +9,15 @@
 pub mod error;
 mod time;
 
+use anymap::any::Any;
+use anymap::Map;
 use byteorder::ReadBytesExt;
 use bytes::{BufMut, BytesMut};
 pub use error::SerializationError;
-use std::io::Read;
-
 #[cfg(feature = "derive")]
 pub use skrillax_serde_derive::{ByteSize, Deserialize, Serialize};
+use std::io::Read;
+use std::sync::{Arc, RwLock};
 #[cfg(feature = "chrono")]
 pub use time::SilkroadTime;
 
@@ -24,6 +26,7 @@ pub use time::SilkroadTime;
 // them also to add these as dependencies of their own. Yikes.
 #[doc(hidden)]
 pub mod __internal {
+    pub use anymap;
     pub use byteorder;
     pub use bytes;
 }
@@ -31,7 +34,7 @@ pub mod __internal {
 macro_rules! implement_primitive {
     ($tt:ty, $read:ident) => {
         impl Serialize for $tt {
-            fn write_to(&self, writer: &mut ::bytes::BytesMut) {
+            fn write_to(&self, writer: &mut ::bytes::BytesMut, _ctx: &SerdeContext) {
                 writer.put_slice(&self.to_le_bytes());
             }
         }
@@ -45,11 +48,57 @@ macro_rules! implement_primitive {
         impl Deserialize for $tt {
             fn read_from<T: std::io::Read + ::byteorder::ReadBytesExt>(
                 reader: &mut T,
+                _ctx: &SerdeContext,
             ) -> Result<Self, SerializationError> {
                 Ok(reader.$read::<::byteorder::LittleEndian>()?)
             }
         }
     };
+}
+
+type ContextMap = Map<dyn Any + Send + Sync>;
+
+/// Context used during serialization and deserialization.
+///
+/// Silkroad frames can be parsed in a stateless fashion, but the same
+/// cannot be said about the operations contained in those frames. There
+/// are some operations that rely on outside knowledge as well as others
+/// which depend on the request sent that evoked a given response.
+pub struct SerdeContext {
+    data: Arc<RwLock<ContextMap>>,
+}
+
+impl SerdeContext {
+    pub fn new(data: Arc<RwLock<ContextMap>>) -> Self {
+        Self { data }
+    }
+
+    pub fn get<T: Any + Clone + Send + Sync + 'static>(&self) -> Option<T> {
+        let guard = self.data.read().expect("");
+        let res = guard.get::<T>();
+        res.cloned()
+    }
+
+    pub fn set<T: Any + Send + Sync + 'static>(&self, value: T) {
+        self.data
+            .write()
+            .expect("Lock should not be poisoned.")
+            .insert(value);
+    }
+}
+
+impl Clone for SerdeContext {
+    fn clone(&self) -> Self {
+        Self {
+            data: Arc::clone(&self.data),
+        }
+    }
+}
+
+impl Default for SerdeContext {
+    fn default() -> Self {
+        Self::new(Arc::new(RwLock::new(Map::new())))
+    }
 }
 
 /// The `Serialize` trait allows an item to be serialized into a binary
@@ -66,13 +115,13 @@ macro_rules! implement_primitive {
 pub trait Serialize: ByteSize {
     /// Writes all bytes representing the content of the struct to the writer
     /// output.
-    fn write_to(&self, writer: &mut BytesMut);
+    fn write_to(&self, writer: &mut BytesMut, ctx: &SerdeContext);
 
     /// Convenience around [self.write_to] which already reserves the necessary
     /// space.
-    fn write_to_end(&self, writer: &mut BytesMut) {
+    fn write_to_end(&self, writer: &mut BytesMut, ctx: &SerdeContext) {
         writer.reserve(self.byte_size());
-        self.write_to(writer);
+        self.write_to(writer, ctx);
     }
 }
 
@@ -86,7 +135,10 @@ pub trait Deserialize {
     /// `Self`.
     ///
     /// May return an error if the data did not match the expected format.
-    fn read_from<T: Read + ReadBytesExt>(reader: &mut T) -> Result<Self, SerializationError>
+    fn read_from<T: Read + ReadBytesExt>(
+        reader: &mut T,
+        ctx: &SerdeContext,
+    ) -> Result<Self, SerializationError>
     where
         Self: Sized; // Technically, we don't care about being `Sized`, but unfortunately, Result
                      // does.
@@ -106,19 +158,22 @@ pub trait ByteSize {
 }
 
 impl Serialize for u8 {
-    fn write_to(&self, writer: &mut BytesMut) {
+    fn write_to(&self, writer: &mut BytesMut, _ctx: &SerdeContext) {
         writer.put_u8(*self);
     }
 }
 
 impl ByteSize for u8 {
     fn byte_size(&self) -> usize {
-        std::mem::size_of::<u8>()
+        size_of::<u8>()
     }
 }
 
 impl Deserialize for u8 {
-    fn read_from<T: Read + ReadBytesExt>(reader: &mut T) -> Result<Self, SerializationError>
+    fn read_from<T: Read + ReadBytesExt>(
+        reader: &mut T,
+        _ctx: &SerdeContext,
+    ) -> Result<Self, SerializationError>
     where
         Self: Sized,
     {
@@ -127,9 +182,9 @@ impl Deserialize for u8 {
 }
 
 impl Serialize for bool {
-    fn write_to(&self, writer: &mut BytesMut) {
+    fn write_to(&self, writer: &mut BytesMut, ctx: &SerdeContext) {
         let value = u8::from(*self);
-        value.write_to(writer);
+        value.write_to(writer, ctx);
     }
 }
 
@@ -140,7 +195,10 @@ impl ByteSize for bool {
 }
 
 impl Deserialize for bool {
-    fn read_from<T: Read + ReadBytesExt>(reader: &mut T) -> Result<Self, SerializationError>
+    fn read_from<T: Read + ReadBytesExt>(
+        reader: &mut T,
+        _ctx: &SerdeContext,
+    ) -> Result<Self, SerializationError>
     where
         Self: Sized,
     {
@@ -164,52 +222,62 @@ mod test {
 
     #[test]
     fn test_deserialize_primitive() {
-        let one = u8::read_from(&mut [1u8].reader()).expect("Should be able to read primitive");
-        assert_eq!(1, one);
-        let one =
-            u16::read_from(&mut [1u8, 0u8].reader()).expect("Should be able to read primitive");
-        assert_eq!(1, one);
-        let one = u32::read_from(&mut [1u8, 0u8, 0u8, 0u8].reader())
+        let one = u8::read_from(&mut [1u8].reader(), &SerdeContext::default())
             .expect("Should be able to read primitive");
         assert_eq!(1, one);
-        let one = u64::read_from(&mut [1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8].reader())
+        let one = u16::read_from(&mut [1u8, 0u8].reader(), &SerdeContext::default())
             .expect("Should be able to read primitive");
+        assert_eq!(1, one);
+        let one = u32::read_from(&mut [1u8, 0u8, 0u8, 0u8].reader(), &SerdeContext::default())
+            .expect("Should be able to read primitive");
+        assert_eq!(1, one);
+        let one = u64::read_from(
+            &mut [1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8].reader(),
+            &SerdeContext::default(),
+        )
+        .expect("Should be able to read primitive");
         assert_eq!(1, one);
     }
 
     #[test]
     fn test_deserialize_float_primitives() {
-        let result = f32::read_from(&mut [0x14, 0xAE, 0x29, 0x42].reader())
-            .expect("Should be able to read primitive");
+        let result = f32::read_from(
+            &mut [0x14, 0xAE, 0x29, 0x42].reader(),
+            &SerdeContext::default(),
+        )
+        .expect("Should be able to read primitive");
         assert!((42.42 - result).abs() < 0.00000001);
-        let result = f64::read_from(&mut [0xF6, 0x28, 0x5C, 0x8F, 0xC2, 0x35, 0x45, 0x40].reader())
-            .expect("Should be able to read primitive");
+        let result = f64::read_from(
+            &mut [0xF6, 0x28, 0x5C, 0x8F, 0xC2, 0x35, 0x45, 0x40].reader(),
+            &SerdeContext::default(),
+        )
+        .expect("Should be able to read primitive");
         assert!((42.42 - result).abs() < 0.00000001);
     }
 
     #[test]
     fn test_serialize_primitive() {
         let mut buffer = BytesMut::new();
-        1u8.write_to_end(&mut buffer);
+        1u8.write_to_end(&mut buffer, &SerdeContext::default());
         assert_eq!(&[1], buffer.freeze().as_ref());
         let mut buffer = BytesMut::new();
-        1u16.write_to_end(&mut buffer);
+        1u16.write_to_end(&mut buffer, &SerdeContext::default());
         assert_eq!(&[1, 0], buffer.freeze().as_ref());
         let mut buffer = BytesMut::new();
-        1u32.write_to_end(&mut buffer);
+        1u32.write_to_end(&mut buffer, &SerdeContext::default());
         assert_eq!(&[1, 0, 0, 0], buffer.freeze().as_ref());
         let mut buffer = BytesMut::new();
-        1u64.write_to_end(&mut buffer);
+        1u64.write_to_end(&mut buffer, &SerdeContext::default());
         assert_eq!(&[1, 0, 0, 0, 0, 0, 0, 0], buffer.freeze().as_ref());
     }
 
     #[test]
     fn test_serialize_float_primitives() {
         let mut buffer = BytesMut::new();
-        42.42f32.write_to_end(&mut buffer);
+        42.42f32.write_to_end(&mut buffer, &SerdeContext::default());
         assert_eq!(&[0x14, 0xAE, 0x29, 0x42], buffer.freeze().as_ref());
         let mut buffer = BytesMut::new();
-        42.42f64.write_to_end(&mut buffer);
+        42.42f64.write_to_end(&mut buffer, &SerdeContext::default());
         assert_eq!(
             &[0xF6, 0x28, 0x5C, 0x8F, 0xC2, 0x35, 0x45, 0x40],
             buffer.freeze().as_ref()
