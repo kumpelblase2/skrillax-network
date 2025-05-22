@@ -2,7 +2,7 @@
 mod tests {
     use bytes::Bytes;
     use skrillax_packet::{AsPacket, OutgoingPacket, Packet, TryFromPacket};
-    use skrillax_serde::{ByteSize, Deserialize, Serialize};
+    use skrillax_serde::{ByteSize, Deserialize, SerdeContext, Serialize};
 
     #[derive(Packet, ByteSize, Serialize, Deserialize)]
     #[packet(opcode = 0x0001)]
@@ -21,6 +21,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_serialize() {
         assert!(!TestPacket::MASSIVE);
         assert!(!TestPacket::ENCRYPTED);
@@ -31,13 +32,14 @@ mod tests {
                 opcode: 0x0001,
                 data: Bytes::copy_from_slice(&[0x00, 0x00]),
             },
-            TestSerializeOnly { field: 0 }.as_packet()
+            TestSerializeOnly { field: 0 }.as_packet(SerdeContext::default())
         );
     }
 
     #[test]
     fn test_deserialize() {
-        let (_, deserialized) = TestDeserializeOnly::try_deserialize(&[0x42, 0x42]).unwrap();
+        let (_, deserialized) =
+            TestDeserializeOnly::try_deserialize(&[0x42, 0x42], SerdeContext::default()).unwrap();
         assert_eq!(deserialized.field, 0x4242);
     }
 }

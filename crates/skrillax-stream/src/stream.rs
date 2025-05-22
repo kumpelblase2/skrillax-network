@@ -2,11 +2,14 @@ use bytes::Bytes;
 use futures::{SinkExt, Stream, StreamExt};
 use skrillax_codec::{SilkroadCodec, SilkroadFrame};
 use skrillax_packet::{
-    AsFrames, FramingError, FromFrames, IncomingPacket, OutgoingPacket, Packet, PacketError,
-    ReframingError, SecurityBytes, SecurityContext, TryFromPacket,
+    AsFrames, AsPacket, FramingError, FromFrames, IncomingPacket, OutgoingPacket, Packet,
+    PacketError, ReframingError, SecurityBytes, SecurityContext, TryFromPacket,
 };
 use skrillax_security::SilkroadEncryption;
+use skrillax_serde::SerdeContext;
 use std::io;
+use std::num::NonZeroU16;
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -65,18 +68,48 @@ pub trait InputProtocol {
     /// The type of all possible values we can create
     type Proto: Send;
 
-    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self::Proto), InStreamError>;
+    /// Creates the protocol value given its opcode and associated data.
+    /// Additionally, receives a context of stateful data aiding in parsing
+    /// of stateful operations.
+    ///
+    /// Returns the number of consumed bytes by the operation as well as
+    /// the parsed value from those bytes.
+    fn create_from(
+        opcode: u16,
+        data: &[u8],
+        ctx: SerdeContext,
+    ) -> Result<(usize, Self::Proto), InStreamError>;
 }
 
 impl<T: TryFromPacket + Packet + Send> InputProtocol for T {
     type Proto = T;
 
-    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, T), InStreamError> {
+    fn create_from(
+        opcode: u16,
+        data: &[u8],
+        ctx: SerdeContext,
+    ) -> Result<(usize, T), InStreamError> {
         if opcode != T::ID {
             return Err(InStreamError::UnmatchedOpcode(opcode));
         }
 
-        Ok(T::try_deserialize(data)?)
+        Ok(T::try_deserialize(data, ctx)?)
+    }
+}
+
+/// An [OutputProtocol] is a trait which can be used to serialize a single
+/// operation into a packet. It is assumed there's only a single protocol
+/// for a stream; as such, the implementation of an output protocol is most
+/// likely for enums containing all possible operations supported by this
+/// stream. Unlike [AsPacket], an [OutputProtocol] may have parts which
+/// are not serializable.
+pub trait OutputProtocol {
+    fn create_from(&self, ctx: SerdeContext) -> Result<OutgoingPacket, OutStreamError>;
+}
+
+impl<T: AsPacket + Packet + Send> OutputProtocol for T {
+    fn create_from(&self, ctx: SerdeContext) -> Result<OutgoingPacket, OutStreamError> {
+        Ok(T::as_packet(self, ctx))
     }
 }
 
@@ -115,11 +148,63 @@ impl SilkroadTcpExt for TcpStream {
         let (read, write) = self.into_split();
         let reader = FramedRead::new(read, SilkroadCodec);
         let writer = FramedWrite::new(write, SilkroadCodec);
+        let last_sent = Arc::new(AtomicU16::new(0));
+        let last_received = Arc::new(AtomicU16::new(0));
+        let flags = Arc::new(AtomicUsize::new(0));
 
-        let stream_reader = SilkroadStreamRead::new(reader);
-        let stream_writer = SilkroadStreamWrite::new(writer);
+        let stream_reader = SilkroadStreamRead::new(
+            reader,
+            last_received.clone(),
+            last_sent.clone(),
+            flags.clone(),
+        );
+        let stream_writer = SilkroadStreamWrite::new(writer, last_received, last_sent, flags);
 
         (stream_reader, stream_writer)
+    }
+}
+
+struct SharedState {
+    encryption: Option<Arc<SilkroadEncryption>>,
+    security_bytes: Option<Arc<SecurityBytes>>,
+    last_received: Arc<AtomicU16>,
+    last_sent: Arc<AtomicU16>,
+    flags: Arc<AtomicUsize>,
+}
+
+impl SharedState {
+    fn new(
+        last_received: Arc<AtomicU16>,
+        last_sent: Arc<AtomicU16>,
+        flags: Arc<AtomicUsize>,
+    ) -> Self {
+        Self {
+            encryption: None,
+            security_bytes: None,
+            last_received,
+            last_sent,
+            flags,
+        }
+    }
+
+    fn as_context(&self) -> SerdeContext {
+        let last_received = self.last_received.load(Ordering::Acquire);
+        let last_sent = self.last_sent.load(Ordering::Acquire);
+        let flags = self.flags.load(Ordering::Acquire);
+
+        SerdeContext::new(
+            flags,
+            NonZeroU16::new(last_sent),
+            NonZeroU16::new(last_received),
+        )
+    }
+
+    fn set_last_sent(&self, last_sent: u16) {
+        self.last_sent.store(last_sent, Ordering::Release);
+    }
+
+    fn set_last_received(&self, last_received: u16) {
+        self.last_received.store(last_received, Ordering::Release);
     }
 }
 
@@ -129,16 +214,29 @@ impl SilkroadTcpExt for TcpStream {
 /// facilitate a Silkroad connection, such as encryption.
 pub struct SilkroadStreamWrite<T: AsyncWrite + Unpin> {
     writer: FramedWrite<T, SilkroadCodec>,
-    encryption: Option<Arc<SilkroadEncryption>>,
-    security_bytes: Option<Arc<SecurityBytes>>,
+    state: SharedState,
 }
 
 impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
-    fn new(writer: FramedWrite<T, SilkroadCodec>) -> Self {
+    #[cfg(test)]
+    fn new_raw(writer: FramedWrite<T, SilkroadCodec>) -> Self {
+        Self::new(
+            writer,
+            Arc::new(AtomicU16::new(0)),
+            Arc::new(AtomicU16::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+        )
+    }
+
+    fn new(
+        writer: FramedWrite<T, SilkroadCodec>,
+        last_received: Arc<AtomicU16>,
+        last_sent: Arc<AtomicU16>,
+        flags: Arc<AtomicUsize>,
+    ) -> Self {
         Self {
             writer,
-            encryption: None,
-            security_bytes: None,
+            state: SharedState::new(last_received, last_sent, flags),
         }
     }
 
@@ -147,28 +245,36 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
         writer: FramedWrite<T, SilkroadCodec>,
         encryption: Arc<SilkroadEncryption>,
         security_bytes: Arc<SecurityBytes>,
+        last_received: Arc<AtomicU16>,
+        last_sent: Arc<AtomicU16>,
+        flags: Arc<AtomicUsize>,
     ) -> Self {
         Self {
             writer,
-            encryption: Some(encryption),
-            security_bytes: Some(security_bytes),
+            state: SharedState {
+                encryption: Some(encryption),
+                security_bytes: Some(security_bytes),
+                last_received,
+                last_sent,
+                flags,
+            },
         }
     }
 
     pub fn enable_encryption(&mut self, encryption: Arc<SilkroadEncryption>) {
-        self.encryption = Some(encryption);
+        self.state.encryption = Some(encryption);
     }
 
     pub fn enable_security_checks(&mut self, security_bytes: Arc<SecurityBytes>) {
-        self.security_bytes = Some(security_bytes);
+        self.state.security_bytes = Some(security_bytes);
     }
 
     pub fn encryption(&self) -> Option<&SilkroadEncryption> {
-        self.encryption.as_deref()
+        self.state.encryption.as_deref()
     }
 
     pub fn security_bytes(&self) -> Option<&SecurityBytes> {
-        self.security_bytes.as_deref()
+        self.state.security_bytes.as_deref()
     }
 
     pub fn security_context(&self) -> SecurityContext {
@@ -183,12 +289,23 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
         Ok(())
     }
 
-    pub async fn write_packet<S: Into<OutgoingPacket>>(
-        &mut self,
-        packet: S,
-    ) -> Result<(), OutStreamError> {
-        let outgoing_packet = packet.into();
+    pub async fn write_packet<S: AsPacket>(&mut self, packet: S) -> Result<(), OutStreamError> {
+        let context = self.state.as_context();
+        let outgoing_packet = packet.as_packet(context);
+        self.state.set_last_sent(outgoing_packet.opcode());
         self.write(outgoing_packet).await
+    }
+
+    pub fn toggle_flag(&self, flag: usize) {
+        self.state.flags.fetch_xor(flag, Ordering::Acquire);
+    }
+
+    pub fn set_flag(&self, flag: usize) {
+        self.state.flags.fetch_or(flag, Ordering::Acquire);
+    }
+
+    pub fn remove_flag(&self, flag: usize) {
+        self.state.flags.fetch_and(!flag, Ordering::Acquire);
     }
 }
 
@@ -198,8 +315,7 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
 /// facilitate a Silkroad connection, such as encryption.
 pub struct SilkroadStreamRead<T: AsyncRead + Unpin> {
     reader: FramedRead<T, SilkroadCodec>,
-    encryption: Option<Arc<SilkroadEncryption>>,
-    security_bytes: Option<Arc<SecurityBytes>>,
+    state: SharedState,
     unconsumed: Option<(u16, Bytes)>,
 }
 
@@ -207,11 +323,25 @@ impl<T: AsyncRead + Unpin> SilkroadStreamRead<T>
 where
     FramedRead<T, SilkroadCodec>: Stream<Item = Result<SilkroadFrame, io::Error>>,
 {
-    fn new(reader: FramedRead<T, SilkroadCodec>) -> Self {
+    #[cfg(test)]
+    fn new_raw(reader: FramedRead<T, SilkroadCodec>) -> Self {
+        Self::new(
+            reader,
+            Arc::new(AtomicU16::new(0)),
+            Arc::new(AtomicU16::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+        )
+    }
+
+    fn new(
+        reader: FramedRead<T, SilkroadCodec>,
+        last_received: Arc<AtomicU16>,
+        last_sent: Arc<AtomicU16>,
+        flags: Arc<AtomicUsize>,
+    ) -> Self {
         Self {
             reader,
-            encryption: None,
-            security_bytes: None,
+            state: SharedState::new(last_received, last_sent, flags),
             unconsumed: None,
         }
     }
@@ -221,11 +351,19 @@ where
         reader: FramedRead<T, SilkroadCodec>,
         encryption: Arc<SilkroadEncryption>,
         security_bytes: Arc<SecurityBytes>,
+        last_received: Arc<AtomicU16>,
+        last_sent: Arc<AtomicU16>,
+        flags: Arc<AtomicUsize>,
     ) -> Self {
         Self {
             reader,
-            encryption: Some(encryption),
-            security_bytes: Some(security_bytes),
+            state: SharedState {
+                encryption: Some(encryption),
+                security_bytes: Some(security_bytes),
+                last_received,
+                last_sent,
+                flags,
+            },
             unconsumed: None,
         }
     }
@@ -240,7 +378,7 @@ where
     /// An [Arc] is expected here because it is assumed that the same encryption
     /// will be set on the write half as well.
     pub fn enable_encryption(&mut self, encryption: Arc<SilkroadEncryption>) {
-        self.encryption = Some(encryption);
+        self.state.encryption = Some(encryption);
     }
 
     /// Enables additional security checks for this stream.
@@ -252,17 +390,17 @@ where
     /// An [Arc] is expected here because it is assumed that the same encryption
     /// will be set on the write half as well.
     pub fn enable_security_checks(&mut self, security_bytes: Arc<SecurityBytes>) {
-        self.security_bytes = Some(security_bytes);
+        self.state.security_bytes = Some(security_bytes);
     }
 
     /// Provides the currently set encryption configuration, if present.
     pub fn encryption(&self) -> Option<&SilkroadEncryption> {
-        self.encryption.as_deref()
+        self.state.encryption.as_deref()
     }
 
     /// Provides the currently set security data, if present.
     pub fn security_bytes(&self) -> Option<&SecurityBytes> {
-        self.security_bytes.as_deref()
+        self.state.security_bytes.as_deref()
     }
 
     /// Provides the security context present for the reader.
@@ -329,13 +467,27 @@ where
             _ => self.next().await?.consume(),
         };
 
-        let (consumed, p) = S::create_from(opcode, &buffer)?;
+        let context = self.state.as_context();
+        let (consumed, p) = S::create_from(opcode, &buffer, context)?;
         let _ = buffer.split_to(consumed);
         if !buffer.is_empty() {
             self.unconsumed = Some((opcode, buffer));
         }
 
+        self.state.set_last_received(opcode);
         Ok(p)
+    }
+
+    pub fn toggle_flag(&self, flag: usize) {
+        self.state.flags.fetch_xor(flag, Ordering::Acquire);
+    }
+
+    pub fn set_flag(&self, flag: usize) {
+        self.state.flags.fetch_or(flag, Ordering::Acquire);
+    }
+
+    pub fn remove_flag(&self, flag: usize) {
+        self.state.flags.fetch_and(!flag, Ordering::Acquire);
     }
 }
 
@@ -348,10 +500,23 @@ mod test {
     #[packet(opcode = 0x0042)]
     struct Empty;
 
+    #[derive(Packet, Deserialize, Serialize, ByteSize)]
+    #[packet(opcode = 0x0043)]
+    #[silkroad(size = 0)]
+    enum Conditional {
+        // Ordering matters when using when given that it's just `if` clauses.
+        #[silkroad(when = "ctx.has_flag(1)")]
+        Third(u8),
+        #[silkroad(when = "ctx.last_sent() == NonZeroU16::new(0x0042)")]
+        First(u8),
+        #[silkroad(when = "ctx.last_sent() == NonZeroU16::new(0x0043)")]
+        Second(u8),
+    }
+
     #[tokio::test]
     pub async fn test_read_packet_from_stream() {
         let buffer: &[u8] = &[0x00, 0x00, 0x42, 0x00, 0x00, 0x00];
-        let mut reader = SilkroadStreamRead::new(FramedRead::new(buffer, SilkroadCodec));
+        let mut reader = SilkroadStreamRead::new_raw(FramedRead::new(buffer, SilkroadCodec));
         let _ = reader
             .next_packet::<Empty>()
             .await
@@ -361,7 +526,7 @@ mod test {
     #[tokio::test]
     pub async fn test_write_packet_to_stream() {
         let mut buffer: Vec<u8> = Vec::new();
-        let mut writer = SilkroadStreamWrite::new(FramedWrite::new(&mut buffer, SilkroadCodec));
+        let mut writer = SilkroadStreamWrite::new_raw(FramedWrite::new(&mut buffer, SilkroadCodec));
         writer
             .write_packet(Empty)
             .await
@@ -369,5 +534,65 @@ mod test {
         drop(writer);
         let content: &[u8] = &buffer;
         assert_eq!(&[0x00u8, 0x00, 0x42, 0x00, 0x00, 0x00], content);
+    }
+
+    #[tokio::test]
+    pub async fn test_context_received_sent() {
+        let mut buffer: Vec<u8> = Vec::new();
+        let last_sent = Arc::new(AtomicU16::new(0));
+        let last_received = Arc::new(AtomicU16::new(0));
+        let flags = Arc::new(AtomicUsize::new(0));
+        let mut writer = SilkroadStreamWrite::new(
+            FramedWrite::new(&mut buffer, SilkroadCodec),
+            last_received.clone(),
+            last_sent.clone(),
+            flags.clone(),
+        );
+
+        // First, write the Empty packet to set last_sent
+        writer
+            .write_packet(Empty)
+            .await
+            .expect("Should write Empty packet");
+
+        assert_eq!(last_sent.load(Ordering::Acquire), 0x0042);
+
+        let test_buffer: &[u8] = &[
+            // First one should end up with Conditional::First(0x42)
+            0x01, 0x00, 0x43, 0x00, 0x00, 0x00, 0x42,
+            // Second one should end up with Conditional::Second(0x42)
+            0x01, 0x00, 0x43, 0x00, 0x00, 0x00, 0x42,
+            // Third one should end up with Conditional::Third(0x42)
+            0x01, 0x00, 0x43, 0x00, 0x00, 0x00, 0x42,
+        ];
+        let mut reader = SilkroadStreamRead::new(
+            FramedRead::new(test_buffer, SilkroadCodec),
+            last_received.clone(),
+            last_sent.clone(),
+            flags.clone(),
+        );
+        let cond = reader
+            .next_packet::<Conditional>()
+            .await
+            .expect("Should read Conditional");
+        assert!(matches!(cond, Conditional::First(0x42)));
+
+        writer
+            .write_packet(Conditional::First(1))
+            .await
+            .expect("Should be able to send packet");
+        assert_eq!(last_sent.load(Ordering::Acquire), 0x0043);
+        let cond = reader
+            .next_packet::<Conditional>()
+            .await
+            .expect("Should read Conditional");
+        assert!(matches!(cond, Conditional::Second(0x42)));
+
+        flags.fetch_or(1, Ordering::Acquire);
+        let cond = reader
+            .next_packet::<Conditional>()
+            .await
+            .expect("Should read Conditional");
+        assert!(matches!(cond, Conditional::Third(0x42)));
     }
 }

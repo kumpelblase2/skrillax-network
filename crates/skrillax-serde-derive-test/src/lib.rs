@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use skrillax_serde::{ByteSize, Deserialize, Serialize};
+use skrillax_serde::{ByteSize, Deserialize, SerdeContext, Serialize};
 
 #[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
 struct Test {
@@ -61,7 +61,7 @@ macro_rules! test_serialize_deserialize {
         let start = $init;
         assert_eq!($size, start.byte_size());
         let mut out_buff = bytes::BytesMut::with_capacity($size);
-        start.write_to(&mut out_buff);
+        start.write_to(&mut out_buff, SerdeContext::default());
         let output = out_buff.freeze();
         let result = <$ty>::try_from(output);
         assert!(result.is_ok());

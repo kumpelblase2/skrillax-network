@@ -30,3 +30,4 @@ pub mod packet {
     pub use skrillax_packet::*;
 }
 pub use stream::InputProtocol;
+pub use stream::OutputProtocol;
