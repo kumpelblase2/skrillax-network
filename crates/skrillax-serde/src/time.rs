@@ -3,7 +3,7 @@
 //! display.
 #![cfg(feature = "chrono")]
 
-use crate::{ByteSize, Deserialize, SerializationError, Serialize};
+use crate::{ByteSize, Deserialize, SerdeContext, SerializationError, Serialize};
 use byteorder::{LittleEndian, ReadBytesExt};
 use bytes::{BufMut, BytesMut};
 use chrono::{DateTime, Datelike, Duration as CDuration, TimeZone, Timelike, Utc};
@@ -79,8 +79,8 @@ impl Deref for SilkroadTime {
 }
 
 impl Serialize for SilkroadTime {
-    fn write_to(&self, writer: &mut BytesMut) {
-        self.as_u32().write_to(writer)
+    fn write_to(&self, writer: &mut BytesMut, ctx: SerdeContext) {
+        self.as_u32().write_to(writer, ctx)
     }
 }
 
@@ -91,7 +91,10 @@ impl ByteSize for SilkroadTime {
 }
 
 impl Deserialize for SilkroadTime {
-    fn read_from<T: Read + ReadBytesExt>(reader: &mut T) -> Result<Self, SerializationError>
+    fn read_from<T: Read + ReadBytesExt>(
+        reader: &mut T,
+        _ctx: SerdeContext,
+    ) -> Result<Self, SerializationError>
     where
         Self: Sized,
     {
@@ -101,7 +104,7 @@ impl Deserialize for SilkroadTime {
 }
 
 impl<T: TimeZone> Serialize for DateTime<T> {
-    fn write_to(&self, writer: &mut BytesMut) {
+    fn write_to(&self, writer: &mut BytesMut, _ctx: SerdeContext) {
         let utc_time = self.to_utc();
         writer.put_u16_le(utc_time.year() as u16);
         writer.put_u16_le(utc_time.month() as u16);
@@ -120,7 +123,10 @@ impl<T: TimeZone> ByteSize for DateTime<T> {
 }
 
 impl Deserialize for DateTime<Utc> {
-    fn read_from<T: Read + ReadBytesExt>(reader: &mut T) -> Result<Self, SerializationError> {
+    fn read_from<T: Read + ReadBytesExt>(
+        reader: &mut T,
+        _ctx: SerdeContext,
+    ) -> Result<Self, SerializationError> {
         let timestamp = Utc
             .with_ymd_and_hms(
                 reader.read_u16::<LittleEndian>()? as i32,
@@ -147,7 +153,7 @@ mod test {
         let time_now = Duration::from_secs(one_year + one_day + 35);
         let sro_time = SilkroadTime::from(time_now);
         let mut bytes = BytesMut::new();
-        sro_time.write_to(&mut bytes);
+        sro_time.write_to(&mut bytes, SerdeContext::default());
         let written_bytes = bytes.freeze();
 
         assert_eq!(written_bytes.len(), 4);

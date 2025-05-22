@@ -192,11 +192,11 @@ macro_rules! define_input_protocol {
         impl $crate::__internal::InputProtocol for $name {
             type Proto = Box<$name>;
 
-            fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Box<Self>), $crate::__internal::InStreamError> {
+            fn create_from(opcode: u16, data: &[u8], ctx: skrillax_serde::SerdeContext) -> Result<(usize, Box<Self>), $crate::__internal::InStreamError> {
                 match opcode {
                     $(
                         <$enumValue as $crate::__internal::Packet>::ID => {
-                            let (consumed, res) = <$enumValue as $crate::__internal::TryFromPacket>::try_deserialize(data)?;
+                            let (consumed, res) = <$enumValue as $crate::__internal::TryFromPacket>::try_deserialize(data, ctx)?;
                             Ok((consumed, Box::new($name::$enumValue(res))))
                         }
                     )*
@@ -205,7 +205,7 @@ macro_rules! define_input_protocol {
                         use $crate::__internal::MatchOpcode;
                         $(
                         if $innerProto::has_opcode(opcode) {
-                            let (consumed, res) = $innerProto::create_from(opcode, data)?;
+                            let (consumed, res) = $innerProto::create_from(opcode, data, ctx)?;
                             return Ok((consumed, Box::new($name::$innerProto(*res))));
                         }
                         )*
@@ -228,14 +228,14 @@ macro_rules! define_input_protocol {
 #[macro_export]
 macro_rules! define_output_protocol {
     ($name:ident => $($enumValue:ident),* + $($innerProto:ident),*) => {
-        impl From<$name> for $crate::__internal::OutgoingPacket {
-            fn from(value: $name) -> $crate::__internal::OutgoingPacket {
-                match value {
+        impl $crate::__internal::AsPacket for $name {
+            fn as_packet(&self, ctx: skrillax_serde::SerdeContext) -> $crate::__internal::OutgoingPacket {
+                match self {
                     $(
-                        $name::$enumValue(inner) => inner.into(),
+                        $name::$enumValue(inner) => inner.as_packet(ctx),
                     )*
                     $(
-                        $name::$innerProto(inner) => inner.into(),
+                        $name::$innerProto(inner) => inner.as_packet(ctx),
                     )*
                 }
             }
@@ -261,8 +261,8 @@ pub mod __internal {
 
 #[cfg(test)]
 mod test {
-    use skrillax_packet::{OutgoingPacket, Packet, TryFromPacket};
-    use skrillax_serde::{ByteSize, Deserialize, Serialize};
+    use skrillax_packet::{AsPacket, OutgoingPacket, Packet, TryFromPacket};
+    use skrillax_serde::{ByteSize, Deserialize, SerdeContext, Serialize};
     use skrillax_stream::InputProtocol;
 
     #[derive(Packet, Deserialize, ByteSize, Serialize, Debug, Clone)]
@@ -293,13 +293,14 @@ mod test {
 
     #[test]
     fn test_protocol() {
-        TestProtocol::create_from(0x1000, &[0x00, 0x00]).unwrap();
-        WrapperProtocol::create_from(0x1000, &[0x00, 0x00]).unwrap();
+        TestProtocol::create_from(0x1000, &[0x00, 0x00], SerdeContext::default()).unwrap();
+        WrapperProtocol::create_from(0x1000, &[0x00, 0x00], SerdeContext::default()).unwrap();
     }
 
     #[test]
     fn test_convert() {
-        let (_, packet) = TestPacket::try_deserialize(&[0x00, 0x00]).unwrap();
+        let (_, packet) =
+            TestPacket::try_deserialize(&[0x00, 0x00], SerdeContext::default()).unwrap();
         let proto: TestProtocol = packet.into();
         let wrapper: WrapperProtocol = proto.into();
         let inner_proto: TestProtocol = wrapper.try_into().expect("Should get back inner");
@@ -310,7 +311,8 @@ mod test {
     fn test_outbound_only() {
         let packet = OutboundPacketOnly { opt: None };
         let proto: OutboundProto = packet.into();
-        let data: OutgoingPacket = proto.into();
+        let data: OutgoingPacket = proto.as_packet(SerdeContext::default());
+
         assert!(matches!(
             data,
             OutgoingPacket::Simple { opcode: 0x1001, .. }

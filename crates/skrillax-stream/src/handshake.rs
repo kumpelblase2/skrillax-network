@@ -51,7 +51,7 @@ use skrillax_security::handshake::{CheckBytesInitialization, PassiveEncryptionIn
 use skrillax_security::{
     ActiveHandshake, PassiveHandshake, SecurityFeature, SilkroadSecurityError,
 };
-use skrillax_serde::{ByteSize, Deserialize, Serialize};
+use skrillax_serde::{ByteSize, Deserialize, SerdeContext, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -153,7 +153,9 @@ enum HandshakeActiveProtocol {
 impl From<&HandshakeActiveProtocol> for OutgoingPacket {
     fn from(value: &HandshakeActiveProtocol) -> Self {
         match value {
-            HandshakeActiveProtocol::SecurityCapabilityCheck(check) => check.as_packet(),
+            HandshakeActiveProtocol::SecurityCapabilityCheck(check) => {
+                check.as_packet(SerdeContext::default())
+            },
         }
     }
 }
@@ -161,10 +163,14 @@ impl From<&HandshakeActiveProtocol> for OutgoingPacket {
 impl InputProtocol for HandshakeActiveProtocol {
     type Proto = HandshakeActiveProtocol;
 
-    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), InStreamError> {
+    fn create_from(
+        opcode: u16,
+        data: &[u8],
+        ctx: SerdeContext,
+    ) -> Result<(usize, Self), InStreamError> {
         match opcode {
             SecurityCapabilityCheck::ID => {
-                let (consumed, check) = SecurityCapabilityCheck::try_deserialize(data)?;
+                let (consumed, check) = SecurityCapabilityCheck::try_deserialize(data, ctx)?;
                 Ok((
                     consumed,
                     HandshakeActiveProtocol::SecurityCapabilityCheck(check),
@@ -206,17 +212,21 @@ enum HandshakePassiveProtocol {
 impl InputProtocol for HandshakePassiveProtocol {
     type Proto = HandshakePassiveProtocol;
 
-    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self), InStreamError> {
+    fn create_from(
+        opcode: u16,
+        data: &[u8],
+        ctx: SerdeContext,
+    ) -> Result<(usize, Self), InStreamError> {
         match opcode {
             HandshakeAccepted::ID => {
-                let (consumed, accepted) = HandshakeAccepted::try_deserialize(data)?;
+                let (consumed, accepted) = HandshakeAccepted::try_deserialize(data, ctx)?;
                 Ok((
                     consumed,
                     HandshakePassiveProtocol::HandshakeAccepted(accepted),
                 ))
             },
             HandshakeChallenge::ID => {
-                let (consumed, challenge) = HandshakeChallenge::try_deserialize(data)?;
+                let (consumed, challenge) = HandshakeChallenge::try_deserialize(data, ctx)?;
                 Ok((
                     consumed,
                     HandshakePassiveProtocol::HandshakeChallenge(challenge),
@@ -230,8 +240,12 @@ impl InputProtocol for HandshakePassiveProtocol {
 impl From<&HandshakePassiveProtocol> for OutgoingPacket {
     fn from(value: &HandshakePassiveProtocol) -> Self {
         match value {
-            HandshakePassiveProtocol::HandshakeChallenge(challenge) => challenge.as_packet(),
-            HandshakePassiveProtocol::HandshakeAccepted(accept) => accept.as_packet(),
+            HandshakePassiveProtocol::HandshakeChallenge(challenge) => {
+                challenge.as_packet(SerdeContext::default())
+            },
+            HandshakePassiveProtocol::HandshakeAccepted(accept) => {
+                accept.as_packet(SerdeContext::default())
+            },
         }
     }
 }
