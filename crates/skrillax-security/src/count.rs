@@ -8,7 +8,7 @@ fn generate_value(mut value: u32) -> u32 {
         v = (v >> 1) ^ value;
         v = (v >> 1) ^ value;
         v = (v >> 1) ^ value;
-        value = (((value >> 1) | (value << 31)) & (!1)) | (v & 1);
+        value = (value.rotate_right(1) & (!1)) | (v & 1);
     }
     value
 }

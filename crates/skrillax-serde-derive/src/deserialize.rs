@@ -134,8 +134,17 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Tok
                     let Ok(field_args) = FieldArgs::from_attributes(&variant.attrs) else {
                         abort!(variant, "Could not parse attrs for variant.");
                     };
+
+                    if field_args.value.is_none() && field_args.when.is_none() {
+                        abort!(
+                            variant,
+                            "When size is not zero, either value or when should be set."
+                        );
+                    }
+
                     let variant_check = if let Some(cond) = field_args.when {
-                        let cond = syn::parse_str::<Expr>(&cond).unwrap();
+                        let cond_str = cond.replace("tag", "variant");
+                        let cond = syn::parse_str::<Expr>(&cond_str).unwrap();
                         quote! {
                             variant if #cond
                         }
@@ -192,7 +201,9 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Tok
                         },
                         Fields::Unit => {
                             quote_spanned! { variant_ident.span() =>
-                                #variant_check => Ok(#ident::#variant_ident)
+                                #variant_check => {
+                                    Ok(#ident::#variant_ident)
+                                }
                             }
                         },
                     }
@@ -225,6 +236,12 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
     let Ok(args) = FieldArgs::from_attributes(&field.attrs) else {
         abort!(field, "Could not parse attrs for field.");
     };
+
+    if args.tag {
+        return quote_spanned! { field.span() =>
+            let #ident = variant;
+        };
+    }
 
     if !matches!(ty, UsedType::Collection(_)) && args.calculate.is_some() {
         let calculate = args.calculate.unwrap();

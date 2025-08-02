@@ -196,12 +196,71 @@ fn generate_for_variant(ident: &Ident, variant: &Variant, size: usize) -> TokenS
     };
     let variant_name = &variant.ident;
     let value_output = if size > 0 {
-        let value = attributes
-            .value
-            .expect("When size is not zero, value should be set.");
-        let value = get_variant_value(variant_name, value, size);
-        quote_spanned! { variant_name.span() =>
-            #value.write_to(writer, ctx);
+        if attributes.value.is_none() && attributes.when.is_none() {
+            abort!(
+                variant,
+                "When size is not zero, either value or when should be set."
+            );
+        }
+
+        // For variants with a when attribute, we need to determine the value at runtime
+        // For serialization, we'll just use the first field's value as the tag
+        if let Some(_) = attributes.when {
+            match &variant.fields {
+                Fields::Named(fields) if !fields.named.is_empty() => {
+                    let relevant_field = fields
+                        .named
+                        .iter()
+                        .map(|field| {
+                            (
+                                field,
+                                FieldArgs::from_attributes(&field.attrs).unwrap_or_default(),
+                            )
+                        })
+                        .find(|(_, args)| args.tag)
+                        .map(|(f, _)| f)
+                        .unwrap_or(fields.named.first().unwrap());
+
+                    let first_field_ident = relevant_field.ident.as_ref().unwrap();
+                    quote_spanned! { variant_name.span() =>
+                        #first_field_ident.write_to(writer, ctx);
+                    }
+                },
+                Fields::Unnamed(fields) if !fields.unnamed.is_empty() => {
+                    let relevant_field_index = fields
+                        .unnamed
+                        .iter()
+                        .enumerate()
+                        .map(|(index, field)| {
+                            (
+                                index,
+                                FieldArgs::from_attributes(&field.attrs).unwrap_or_default(),
+                            )
+                        })
+                        .find(|(_, args)| args.tag)
+                        .map(|(f, _)| f)
+                        .unwrap_or(0);
+
+                    let first_field_ident = format_ident!("t{relevant_field_index}");
+
+                    quote_spanned! { variant_name.span() =>
+                        #first_field_ident.write_to(writer, ctx);
+                    }
+                },
+                _ => {
+                    abort!(
+                        variant,
+                        "When using 'when' attribute, the variant must have at least one field to \
+                         use as the tag value."
+                    );
+                },
+            }
+        } else {
+            let value = attributes.value.unwrap();
+            let value = get_variant_value(variant_name, value, size);
+            quote_spanned! { variant_name.span() =>
+                #value.write_to(writer, ctx);
+            }
         }
     } else {
         quote!()
@@ -223,6 +282,7 @@ fn generate_for_variant(ident: &Ident, variant: &Variant, size: usize) -> TokenS
                 .named
                 .iter()
                 .zip(&idents)
+                .filter(|(f, _)| !FieldArgs::from_attributes(&f.attrs).unwrap_or_default().tag)
                 .map(|(field, ident)| generate_for_field(field, quote!(#ident)));
 
             quote_spanned! {variant_name.span()=>
@@ -240,6 +300,7 @@ fn generate_for_variant(ident: &Ident, variant: &Variant, size: usize) -> TokenS
                 .unnamed
                 .iter()
                 .zip(&idents)
+                .filter(|(f, _)| !FieldArgs::from_attributes(&f.attrs).unwrap_or_default().tag)
                 .map(|(field, ident)| generate_for_field(field, quote!(#ident)));
 
             quote_spanned! {variant_name.span()=>

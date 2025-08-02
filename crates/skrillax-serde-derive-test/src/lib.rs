@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use bytes::BytesMut;
 use skrillax_serde::{ByteSize, Deserialize, SerdeContext, Serialize};
 
 #[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
@@ -167,4 +168,113 @@ pub fn test_unknown_variant() {
             3, "TestEnum"
         ))
     ));
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+#[silkroad(size = 2)]
+enum TaggedEnum {
+    #[silkroad(when = "tag < 100")]
+    A {
+        #[silkroad(tag)]
+        value: u16,
+    },
+    #[silkroad(when = "tag >= 100 && tag <= 300")]
+    B {
+        #[silkroad(tag)]
+        value: u16,
+    },
+    #[silkroad(when = "tag >= 301")]
+    C {
+        #[silkroad(tag)]
+        value: u16,
+    },
+}
+
+#[test]
+pub fn test_tagged_enum() {
+    let bytes = bytes::Bytes::from_static(&[50u8, 0u8]);
+    let result = TaggedEnum::try_from(bytes);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), TaggedEnum::A { value: 50 });
+
+    let bytes = bytes::Bytes::from_static(&[150u8, 0u8]);
+    let result = TaggedEnum::try_from(bytes);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), TaggedEnum::B { value: 150 });
+
+    let bytes = bytes::Bytes::from_static(&[0xD8, 0x4]);
+    let result = TaggedEnum::try_from(bytes);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), TaggedEnum::C { value: 1240 });
+}
+
+#[test]
+pub fn test_tagged_enum_serialization() {
+    let a_enum = TaggedEnum::A { value: 50 };
+    let mut output = BytesMut::with_capacity(a_enum.byte_size());
+    a_enum.write_to(&mut output, &SerdeContext::default());
+    let serialized = output.freeze();
+    assert_eq!(serialized.as_ref(), &[50u8, 0u8]);
+
+    let b_enum = TaggedEnum::B { value: 150 };
+    let mut output = BytesMut::with_capacity(b_enum.byte_size());
+    b_enum.write_to(&mut output, &SerdeContext::default());
+    let serialized = output.freeze();
+    assert_eq!(serialized.as_ref(), &[150u8, 0u8]);
+
+    let c_enum = TaggedEnum::C { value: 1240 };
+    let mut output = BytesMut::with_capacity(c_enum.byte_size());
+    c_enum.write_to(&mut output, &SerdeContext::default());
+    let serialized = output.freeze();
+    assert_eq!(serialized.as_ref(), &[0xD8, 0x4]);
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+#[silkroad(size = 2)]
+enum TaggedTupleEnum {
+    #[silkroad(when = "tag < 100")]
+    A(#[silkroad(tag)] u16),
+    #[silkroad(when = "tag >= 100 && tag <= 300")]
+    B(#[silkroad(tag)] u16),
+    #[silkroad(when = "tag >= 301")]
+    C(#[silkroad(tag)] u16),
+}
+
+#[test]
+pub fn test_tagged_tuple_enum() {
+    let bytes = bytes::Bytes::from_static(&[50u8, 0u8]);
+    let result = TaggedTupleEnum::try_from(bytes);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), TaggedTupleEnum::A(50));
+
+    let bytes = bytes::Bytes::from_static(&[150u8, 0u8]);
+    let result = TaggedTupleEnum::try_from(bytes);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), TaggedTupleEnum::B(150));
+
+    let bytes = bytes::Bytes::from_static(&[0xD8, 0x4]);
+    let result = TaggedTupleEnum::try_from(bytes);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), TaggedTupleEnum::C(1240));
+}
+
+#[test]
+pub fn test_tagged_tuple_enum_serialization() {
+    let a_enum = TaggedTupleEnum::A(50);
+    let mut output = BytesMut::with_capacity(a_enum.byte_size());
+    a_enum.write_to(&mut output, &SerdeContext::default());
+    let serialized = output.freeze();
+    assert_eq!(serialized.as_ref(), &[50u8, 0u8]);
+
+    let b_enum = TaggedTupleEnum::B(150);
+    let mut output = BytesMut::with_capacity(b_enum.byte_size());
+    b_enum.write_to(&mut output, &SerdeContext::default());
+    let serialized = output.freeze();
+    assert_eq!(serialized.as_ref(), &[150u8, 0u8]);
+
+    let c_enum = TaggedTupleEnum::C(1240);
+    let mut output = BytesMut::with_capacity(c_enum.byte_size());
+    c_enum.write_to(&mut output, &SerdeContext::default());
+    let serialized = output.freeze();
+    assert_eq!(serialized.as_ref(), &[0xD8, 0x4]);
 }
