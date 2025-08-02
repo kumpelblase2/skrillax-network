@@ -136,6 +136,34 @@
 //!     greeting: Option<String>
 //! }
 //! ```
+//!
+//! ## Conditional Tag Evaluation for Enums
+//!
+//! For enums, you can use the `when` attribute to conditionally evaluate which
+//! variant to use based on the tag value. The tag value is available as `tag`
+//! in the condition expression.
+//!
+//! ```ignore
+//! #[derive(Serialize, ByteSize, Deserialize)]
+//! #[silkroad(size = 2)]
+//! enum TaggedEnum {
+//!     #[silkroad(when = "tag < 100")]
+//!     A {
+//!         #[silkroad(tag)]
+//!         value: u16,
+//!     },
+//!     #[silkroad(when = "tag >= 100")]
+//!     B {
+//!         #[silkroad(tag)]
+//!         value: u16,
+//!     },
+//! }
+//! ```
+//!
+//! When deserializing, the tag value is read first, and then the condition is
+//! evaluated to determine which variant to use. The tag value is also available
+//! for use in the variant's fields, so you can use it to fill in the value of
+//! the variant.
 
 use crate::deserialize::deserialize;
 use crate::serialize::serialize;
@@ -153,7 +181,7 @@ mod size;
 
 pub(crate) const DEFAULT_LIST_TYPE: &str = "length";
 
-#[derive(FromAttributes)]
+#[derive(FromAttributes, Default)]
 #[darling(attributes(silkroad))]
 pub(crate) struct FieldArgs {
     list_type: Option<String>,
@@ -161,6 +189,8 @@ pub(crate) struct FieldArgs {
     value: Option<usize>,
     when: Option<String>,
     calculate: Option<String>,
+    #[darling(default)]
+    tag: bool,
 }
 
 #[derive(FromDeriveInput)]
