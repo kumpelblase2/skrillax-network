@@ -1,0 +1,5 @@
+error: When size is not zero, either value or when should be set.
+ --> tests/ui/serialize_missing_size.rs:7:5
+  |
+7 |     A,
+  |     ^

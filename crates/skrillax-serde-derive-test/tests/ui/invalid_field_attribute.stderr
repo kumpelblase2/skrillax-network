@@ -1,0 +1,12 @@
+error: Tagged fields are not supported for structs.
+  --> tests/ui/invalid_field_attribute.rs:9:5
+   |
+9  | /     #[silkroad(tag)]
+10 | |     value: u16,
+   | |______________^
+
+error[E0425]: cannot find value `variant` in this scope
+ --> tests/ui/invalid_field_attribute.rs:9:5
+  |
+9 |     #[silkroad(tag)]
+  |     ^ not found in this scope

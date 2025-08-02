@@ -13,6 +13,7 @@ independent = true
 skrillax-serde = { path = "../skrillax-serde", features = ["derive"] }
 bytes.workspace = true
 byteorder.workspace = true
+trybuild = "1.0"
 
 [lib]
 doctest = false

@@ -1,0 +1,6 @@
+error: Could not parse attrs for field.
+ --> tests/ui/deserialize_invalid_tag_condition.rs:8:5
+  |
+8 | /     #[silkroad(invalid_attribute)]
+9 | |     field: u32,
+  | |______________^
