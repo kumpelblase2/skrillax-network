@@ -55,6 +55,11 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
     let Ok(args) = FieldArgs::from_attributes(&field.attrs) else {
         abort!(field, "Could not parse field attributes.");
     };
+
+    if args.tag {
+        abort!(field, "Tagged fields are not supported for structs.");
+    }
+
     match ty {
         UsedType::Primitive => {
             quote_spanned! {field.span() =>

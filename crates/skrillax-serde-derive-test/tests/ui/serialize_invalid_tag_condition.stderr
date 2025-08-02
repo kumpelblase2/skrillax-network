@@ -1,0 +1,6 @@
+error: When using 'when' attribute, the variant must have at least one field to use as the tag value.
+ --> tests/ui/serialize_invalid_tag_condition.rs:8:5
+  |
+8 | /     #[silkroad(when = "tag < 100")]
+9 | |     A,
+  | |_____^
