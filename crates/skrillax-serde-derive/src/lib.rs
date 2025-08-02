@@ -373,5 +373,5 @@ fn get_variant_value<T: Spanned + ToTokens>(source: &T, value: usize, size: usiz
         8 => "u64",
         _ => abort!(source, "Unknown size"),
     };
-    syn::parse_str(&format!("{}{}", value, ty)).expect("Should be able to parse a typed number")
+    syn::parse_str(&format!("{value}{ty}")).expect("Should be able to parse a typed number")
 }

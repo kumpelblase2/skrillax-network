@@ -24,7 +24,7 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     let DeriveInput { ident, .. } = input;
 
     let opcode = args.opcode;
-    let name = format!("{}", ident);
+    let name = format!("{ident}");
     let massive = args.massive.unwrap_or(false);
     let encrypted = args.encrypted.unwrap_or(false);
 

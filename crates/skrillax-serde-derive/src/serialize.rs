@@ -210,7 +210,7 @@ fn generate_for_variant(ident: &Ident, variant: &Variant, size: usize) -> TokenS
 
         // For variants with a when attribute, we need to determine the value at runtime
         // For serialization, we'll just use the first field's value as the tag
-        if let Some(_) = attributes.when {
+        if attributes.when.is_some() {
             match &variant.fields {
                 Fields::Named(fields) if !fields.named.is_empty() => {
                     let relevant_field = fields
