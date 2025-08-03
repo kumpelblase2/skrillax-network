@@ -12,7 +12,7 @@ keywords = ["silkroad", "serde"]
 independent = true
 
 [dependencies]
-darling = "0.20"
+darling = "0.21"
 proc-macro-error = "1"
 proc-macro2 = "1"
 quote = "1"
