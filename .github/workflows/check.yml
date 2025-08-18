@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     name: nightly fmt
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     name: clippy
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -32,6 +32,6 @@ jobs:
     name: semver checks
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
