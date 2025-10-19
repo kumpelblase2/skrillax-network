@@ -170,7 +170,7 @@ use crate::serialize::serialize;
 use crate::size::size;
 use darling::{FromAttributes, FromDeriveInput};
 use proc_macro::TokenStream;
-use proc_macro_error::{abort, proc_macro_error};
+use proc_macro_error2::{abort, proc_macro_error};
 use quote::{quote, ToTokens};
 use syn::spanned::Spanned;
 use syn::{parse_macro_input, DeriveInput, Expr, GenericArgument, PathArguments, Type};
@@ -286,7 +286,7 @@ pub(crate) enum UsedType<'a> {
     Tuple(Vec<&'a Type>),
 }
 
-pub(crate) fn get_type_of(ty: &Type) -> UsedType {
+pub(crate) fn get_type_of(ty: &Type) -> UsedType<'_> {
     match ty {
         Type::Array(arr) => UsedType::Array(&arr.len),
         Type::Reference(_) => abort!(ty, "References are not supported for (de)serialization."),
