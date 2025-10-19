@@ -14,12 +14,12 @@ test = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-skrillax-stream = { path = "../../crates/skrillax-stream" }
-skrillax-packet = { path = "../../crates/skrillax-packet", features = [
+skrillax-stream = { path = "../../crates/skrillax-stream", version = "0.2.0" }
+skrillax-packet = { path = "../../crates/skrillax-packet", version = "0.3.0", features = [
     "derive",
     "serde",
 ] }
-skrillax-serde = { path = "../../crates/skrillax-serde", features = ["derive"] }
+skrillax-serde = { path = "../../crates/skrillax-serde", version = "0.2.0", features = ["derive"] }
 tokio = { version = "1.42.0", features = ["net", "macros", "rt-multi-thread"] }
 serde = { version = "1.0.198", features = ["derive"] }
 bytes.workspace = true
