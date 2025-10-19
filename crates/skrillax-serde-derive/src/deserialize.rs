@@ -1,7 +1,7 @@
 use crate::{get_type_of, get_variant_value, FieldArgs, SilkroadArgs, UsedType};
 use darling::{FromAttributes, ToTokens};
 use proc_macro2::{Ident, TokenStream};
-use proc_macro_error::abort;
+use proc_macro_error2::abort;
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{Data, Expr, Field, Fields, Type};
@@ -212,10 +212,18 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Tok
                 let variant_string = format!("{ident}");
                 let size = args.size.unwrap_or(1);
                 let reader = match size {
-                    1 => quote_spanned!(ident.span() => u8::read_from(reader, ctx)?),
-                    2 => quote_spanned!(ident.span() => u16::read_from(reader, ctx)?),
-                    4 => quote_spanned!(ident.span() => u32::read_from(reader, ctx)?),
-                    8 => quote_spanned!(ident.span() => u64::read_from(reader, ctx)?),
+                    1 => {
+                        quote_spanned!(ident.span() => u8::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#variant_string, e))?)
+                    },
+                    2 => {
+                        quote_spanned!(ident.span() => u16::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#variant_string, e))?)
+                    },
+                    4 => {
+                        quote_spanned!(ident.span() => u32::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#variant_string, e))?)
+                    },
+                    8 => {
+                        quote_spanned!(ident.span() => u64::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#variant_string, e))?)
+                    },
                     _ => abort!(ident, "Invalid size"),
                 };
                 quote_spanned! { ident.span() =>
@@ -236,6 +244,7 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
     let Ok(args) = FieldArgs::from_attributes(&field.attrs) else {
         abort!(field, "Could not parse attrs for field.");
     };
+    let ident_string = format!("\"{ident}\"");
 
     if args.tag {
         return quote_spanned! { field.span() =>
@@ -253,20 +262,20 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
     match ty {
         UsedType::Primitive => {
             quote_spanned! { field.span() =>
-                let #ident = #type_name::read_from(reader, ctx)?;
+                let #ident = #type_name::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?;
             }
         },
         UsedType::String => {
             let content = match args.size.unwrap_or(1) {
                 1 => quote! {
                     for _ in 0..skrillax_serde_len {
-                        skrillax_serde_bytes.push(u8::read_from(reader, ctx)?);
+                        skrillax_serde_bytes.push(u8::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?);
                     }
                     let #ident = String::from_utf8(skrillax_serde_bytes)?;
                 },
                 2 => quote! {
                     for _ in 0..skrillax_serde_len {
-                        skrillax_serde_bytes.push(u16::read_from(reader, ctx)?);
+                        skrillax_serde_bytes.push(u16::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?);
                     }
                     let #ident = String::from_utf16(&skrillax_serde_bytes)?;
                 },
@@ -274,7 +283,7 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
             };
 
             quote_spanned! { field.span() =>
-                let skrillax_serde_len = u16::read_from(reader, ctx)?;
+                let skrillax_serde_len = u16::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?;
                 let mut skrillax_serde_bytes = Vec::with_capacity(skrillax_serde_len.into());
                 #content
             }
@@ -296,7 +305,7 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                     quote_spanned! { field.span() =>
                         let mut skrillax_serde_items = Vec::new();
                         loop {
-                            let skrillax_serde_more = u8::read_from(reader, ctx)?;
+                            let skrillax_serde_more = u8::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?;
                             if skrillax_serde_more == #break_value {
                                 break;
                             }
@@ -328,7 +337,7 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                 },
                 _ => {
                     quote_spanned! { field.span() =>
-                        let skrillax_serde_size = u8::read_from(reader, ctx)?;
+                        let skrillax_serde_size = u8::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?;
                         let mut skrillax_serde_items = Vec::with_capacity(skrillax_serde_size.into());
                         for _ in 0..skrillax_serde_size {
                             #inner
@@ -359,7 +368,7 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                 },
                 None => {
                     quote_spanned! { field.span() =>
-                        let skrillax_serde_some = u8::read_from(reader, ctx)?;
+                        let skrillax_serde_some = u8::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?;
                         let #ident = if skrillax_serde_some == 1 {
                             #inner_ts
                             Some(#ident)
@@ -387,18 +396,19 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
 }
 
 fn generate_reader_for_inner(ident: &Ident, type_name: &Type, ty: &UsedType) -> TokenStream {
+    let ident_string = format!("{ident}");
     match ty {
         UsedType::Primitive => {
             quote_spanned! { ident.span() =>
-                let #ident = #type_name::read_from(reader, ctx)?;
+                let #ident = #type_name::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?;
             }
         },
         UsedType::String => {
             quote_spanned! { ident.span() =>
-                let skrillax_serde_len = u16::read_from(reader, ctx)?;
+                let skrillax_serde_len = u16::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?;
                 let mut skrillax_serde_bytes = Vec::with_capacity(skrillax_serde_len.into());
                 for _ in 0..skrillax_serde_len {
-                    skrillax_serde_bytes.push(u8::read_from(reader, ctx)?);
+                    skrillax_serde_bytes.push(u8::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?);
                 }
                 let #ident = String::from_utf8(skrillax_serde_bytes)?;
             }
@@ -412,19 +422,19 @@ fn generate_reader_for_inner(ident: &Ident, type_name: &Type, ty: &UsedType) -> 
         },
         UsedType::Collection(inner) => {
             quote_spanned! { ident.span() =>
-                let skrillax_serde_size = u8::read_from(reader, ctx)?;
+                let skrillax_serde_size = u8::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?;
                 let mut skrillax_serde_items = Vec::with_capacity(skrillax_serde_size.into());
                 for _ in 0..skrillax_serde_size {
-                    skrillax_serde_items.push(#inner::read_from(reader, ctx)?);
+                    skrillax_serde_items.push(#inner::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?);
                 }
                 let #ident = skrillax_serde_items;
             }
         },
         UsedType::Option(inner) => {
             quote_spanned! { ident.span() =>
-                let skrillax_serde_some = u8::read_from(reader,ctx)?;
+                let skrillax_serde_some = u8::read_from(reader,ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?;
                 let #ident = if skrillax_serde_some == 1 {
-                    Some(#inner::read_from(reader, ctx)?)
+                    Some(#inner::read_from(reader, ctx).map_err(|e| skrillax_serde::SerializationError::field_io_error(#ident_string, e))?)
                 } else {
                     None
                 };

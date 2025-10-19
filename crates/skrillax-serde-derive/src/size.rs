@@ -1,7 +1,7 @@
 use crate::{get_type_of, FieldArgs, SilkroadArgs, UsedType};
 use darling::FromAttributes;
 use proc_macro2::{Ident, TokenStream};
-use proc_macro_error::abort;
+use proc_macro_error2::abort;
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{Data, Field, Fields, Index, Type};
