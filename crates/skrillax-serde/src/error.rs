@@ -5,7 +5,7 @@ use thiserror::Error;
 /// Any kind of problem that may occur when trying to deserialize data.
 #[derive(Error, Debug)]
 pub enum SerializationError {
-    #[error("I/O error when serialize/deserializing packet")]
+    #[error("I/O error when serialize/deserializing packet. {0:?}")]
     IoError(#[from] io::Error),
     #[error("I/O error when serialize/deserializing packet at field {0}. {1:?}")]
     FieldIoError(&'static str, io::Error),

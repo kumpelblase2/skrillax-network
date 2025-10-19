@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use skrillax_packet::Packet;
 use skrillax_serde::{ByteSize, Deserialize, Serialize};
+use skrillax_stream::handshake::StaticRegistryExt;
+use skrillax_stream::registry::PacketRegistry;
 use skrillax_stream::{handshake::PassiveSecuritySetup, stream::SilkroadTcpExt};
 use std::net::ToSocketAddrs;
 use tokio::net::{TcpSocket, TcpStream};
@@ -41,7 +43,13 @@ pub struct GatewayNotice {
 #[tokio::main]
 async fn main() {
     let connection = connect_to_silkroad().await;
-    let (mut reader, mut writer) = connection.into_silkroad_stream();
+    let client_registry = PacketRegistry::builder()
+        .register_passive_handshake()
+        .register::<IdentityInformation>()
+        .register::<GatewayNoticeRequest>()
+        .register::<GatewayNoticeResponse>()
+        .build();
+    let (mut reader, mut writer) = connection.into_silkroad_stream(client_registry);
     PassiveSecuritySetup::handle(&mut reader, &mut writer)
         .await
         .unwrap();
@@ -53,14 +61,20 @@ async fn main() {
         .await
         .unwrap();
 
-    let their_info = reader.next_packet::<IdentityInformation>().await.unwrap();
+    let received_packet = reader.next_packet().await.unwrap();
+    let their_info = received_packet
+        .into_packet::<IdentityInformation>()
+        .unwrap();
     println!("{}", their_info.module_name);
     writer
         .write_packet(GatewayNoticeRequest { unknown: 0x12 })
         .await
         .unwrap();
-    let notices = reader.next_packet::<GatewayNoticeResponse>().await.unwrap();
-    for notice in notices.notices {
+    let received_packet = reader.next_packet().await.unwrap();
+    let notices = received_packet
+        .into_packet::<GatewayNoticeResponse>()
+        .unwrap();
+    for notice in &notices.notices {
         println!(
             "{}: {} - {}",
             notice.published,

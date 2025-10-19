@@ -17,18 +17,25 @@
 //! its perspective:
 //!
 //! ```no_run
-//! # async fn test() {
+//! # use skrillax_stream::registry::PacketRegistry;
+//!
+//!  async fn test() {
 //! # use tokio::net::TcpSocket;
 //! # use skrillax_stream::stream::SilkroadTcpExt;
+//! # use skrillax_stream::handshake::StaticRegistryExt;
 //! # use skrillax_stream::handshake::ActiveSecuritySetup;
 //! # use skrillax_stream::handshake::PassiveSecuritySetup;
 //! # let listen_addr = "127.0.0.1:1337".parse().unwrap();
 //! # let socket = TcpSocket::new_v4().unwrap().connect(listen_addr).await.unwrap();
-//! let (mut reader, mut writer) = socket.into_silkroad_stream();
+//! let registry = PacketRegistry::builder().register_active_handshake().build();
+//! let (mut reader, mut writer) = socket.into_silkroad_stream(registry);
 //! ActiveSecuritySetup::handle(&mut reader, &mut writer)
 //!     .await
 //!     .expect("Active setup should complete.");
 //! // OR
+//! let registry = PacketRegistry::builder().register_passive_handshake().build();
+//! # let socket = TcpSocket::new_v4().unwrap().connect(listen_addr).await.unwrap();
+//! let (mut reader, mut writer) = socket.into_silkroad_stream(registry);
 //! PassiveSecuritySetup::handle(&mut reader, &mut writer)
 //!     .await
 //!     .expect("Passive setup should complete.");
@@ -40,18 +47,15 @@
 //! encryption as a security feature, we can also now send and receive encrypted
 //! packets.
 
-use crate::stream::{
-    InStreamError, InputProtocol, OutStreamError, SilkroadStreamRead, SilkroadStreamWrite,
-};
+use crate::registry::PacketRegistryBuilder;
+use crate::stream::{InStreamError, OutStreamError, SilkroadStreamRead, SilkroadStreamWrite};
 use bitflags::bitflags;
-use skrillax_packet::{
-    AsPacket, OutgoingPacket, Packet, PacketError, SecurityBytes, TryFromPacket,
-};
+use skrillax_packet::{Packet, PacketError, SecurityBytes};
 use skrillax_security::handshake::{CheckBytesInitialization, PassiveEncryptionInitializationData};
 use skrillax_security::{
     ActiveHandshake, PassiveHandshake, SecurityFeature, SilkroadSecurityError,
 };
-use skrillax_serde::{ByteSize, Deserialize, SerdeContext, Serialize};
+use skrillax_serde::{ByteSize, Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -140,47 +144,6 @@ impl SecurityCapabilityCheck {
     }
 }
 
-impl From<SecurityCapabilityCheck> for HandshakeActiveProtocol {
-    fn from(value: SecurityCapabilityCheck) -> Self {
-        HandshakeActiveProtocol::SecurityCapabilityCheck(value)
-    }
-}
-
-enum HandshakeActiveProtocol {
-    SecurityCapabilityCheck(SecurityCapabilityCheck),
-}
-
-impl From<&HandshakeActiveProtocol> for OutgoingPacket {
-    fn from(value: &HandshakeActiveProtocol) -> Self {
-        match value {
-            HandshakeActiveProtocol::SecurityCapabilityCheck(check) => {
-                check.as_packet(&SerdeContext::default())
-            },
-        }
-    }
-}
-
-impl InputProtocol for HandshakeActiveProtocol {
-    type Proto = HandshakeActiveProtocol;
-
-    fn create_from(
-        opcode: u16,
-        data: &[u8],
-        ctx: SerdeContext,
-    ) -> Result<(usize, Self), InStreamError> {
-        match opcode {
-            SecurityCapabilityCheck::ID => {
-                let (consumed, check) = SecurityCapabilityCheck::try_deserialize(data, &ctx)?;
-                Ok((
-                    consumed,
-                    HandshakeActiveProtocol::SecurityCapabilityCheck(check),
-                ))
-            },
-            _ => Err(InStreamError::UnmatchedOpcode(opcode)),
-        }
-    }
-}
-
 #[derive(Packet, ByteSize, Serialize, Deserialize, Debug)]
 #[packet(opcode = 0x5000)]
 struct HandshakeChallenge {
@@ -188,67 +151,9 @@ struct HandshakeChallenge {
     pub key: u64,
 }
 
-impl From<HandshakeChallenge> for HandshakePassiveProtocol {
-    fn from(value: HandshakeChallenge) -> Self {
-        HandshakePassiveProtocol::HandshakeChallenge(value)
-    }
-}
-
 #[derive(Packet, ByteSize, Serialize, Deserialize, Debug)]
 #[packet(opcode = 0x9000)]
 struct HandshakeAccepted;
-
-impl From<HandshakeAccepted> for HandshakePassiveProtocol {
-    fn from(value: HandshakeAccepted) -> Self {
-        HandshakePassiveProtocol::HandshakeAccepted(value)
-    }
-}
-
-enum HandshakePassiveProtocol {
-    HandshakeChallenge(HandshakeChallenge),
-    HandshakeAccepted(HandshakeAccepted),
-}
-
-impl InputProtocol for HandshakePassiveProtocol {
-    type Proto = HandshakePassiveProtocol;
-
-    fn create_from(
-        opcode: u16,
-        data: &[u8],
-        ctx: SerdeContext,
-    ) -> Result<(usize, Self), InStreamError> {
-        match opcode {
-            HandshakeAccepted::ID => {
-                let (consumed, accepted) = HandshakeAccepted::try_deserialize(data, &ctx)?;
-                Ok((
-                    consumed,
-                    HandshakePassiveProtocol::HandshakeAccepted(accepted),
-                ))
-            },
-            HandshakeChallenge::ID => {
-                let (consumed, challenge) = HandshakeChallenge::try_deserialize(data, &ctx)?;
-                Ok((
-                    consumed,
-                    HandshakePassiveProtocol::HandshakeChallenge(challenge),
-                ))
-            },
-            _ => Err(InStreamError::UnmatchedOpcode(opcode)),
-        }
-    }
-}
-
-impl From<&HandshakePassiveProtocol> for OutgoingPacket {
-    fn from(value: &HandshakePassiveProtocol) -> Self {
-        match value {
-            HandshakePassiveProtocol::HandshakeChallenge(challenge) => {
-                challenge.as_packet(&SerdeContext::default())
-            },
-            HandshakePassiveProtocol::HandshakeAccepted(accept) => {
-                accept.as_packet(&SerdeContext::default())
-            },
-        }
-    }
-}
 
 /// Active part of a Silkroad Online connection handshake.
 ///
@@ -354,9 +259,8 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> ActiveSecuritySetup<'_, T, S> 
         };
         writer.write_packet(init_packet).await?;
 
-        let response = reader.next_packet::<HandshakePassiveProtocol>().await?;
-
-        let HandshakePassiveProtocol::HandshakeChallenge(challenge) = response else {
+        let response = reader.next_packet().await?;
+        let Ok(challenge) = response.into_packet::<HandshakeChallenge>() else {
             return Err(HandshakeError::NoChallengeReceived);
         };
 
@@ -369,8 +273,8 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> ActiveSecuritySetup<'_, T, S> 
             })
             .await?;
 
-        let response = reader.next_packet::<HandshakePassiveProtocol>().await?;
-        if !matches!(response, HandshakePassiveProtocol::HandshakeAccepted(_)) {
+        let response = reader.next_packet().await?;
+        if !response.into_packet::<HandshakeAccepted>().is_ok() {
             return Err(HandshakeError::FinalizationNotAccepted);
         }
 
@@ -381,6 +285,25 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> ActiveSecuritySetup<'_, T, S> 
         }
 
         Ok(())
+    }
+}
+
+pub trait StaticRegistryExt {
+    fn register_active_handshake(self) -> Self;
+    fn register_passive_handshake(self) -> Self;
+}
+
+impl StaticRegistryExt for PacketRegistryBuilder {
+    fn register_active_handshake(self) -> Self {
+        self.register_incoming::<HandshakeChallenge>()
+            .register_incoming::<HandshakeAccepted>()
+            .register_outgoing::<SecurityCapabilityCheck>()
+    }
+
+    fn register_passive_handshake(self) -> Self {
+        self.register_outgoing::<HandshakeChallenge>()
+            .register_outgoing::<HandshakeAccepted>()
+            .register_incoming::<SecurityCapabilityCheck>()
     }
 }
 
@@ -419,8 +342,10 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S>
         let (reader, writer) = (self.reader, self.writer);
         let mut handshake = PassiveHandshake::default();
 
-        let init = reader.next_packet::<HandshakeActiveProtocol>().await?;
-        let HandshakeActiveProtocol::SecurityCapabilityCheck(capability) = init;
+        let init = reader.next_packet().await?;
+        let Ok(capability) = init.into_packet::<SecurityCapabilityCheck>() else {
+            return Err(HandshakeError::FinalizationNotAccepted); // TODO
+        };
 
         if capability.flag == HandshakeContent::NONE {
             return Ok(());
@@ -440,8 +365,10 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S>
         if let Some((key, b)) = challenge {
             writer.write_packet(HandshakeChallenge { b, key }).await?;
 
-            let finalize = reader.next_packet::<HandshakeActiveProtocol>().await?;
-            let HandshakeActiveProtocol::SecurityCapabilityCheck(capability) = finalize;
+            let finalize = reader.next_packet().await?;
+            let Ok(capability) = finalize.into_packet::<SecurityCapabilityCheck>() else {
+                return Err(HandshakeError::FinalizationNotAccepted); // TODO
+            };
             if !capability.flag == HandshakeContent::FINISH {
                 return Err(HandshakeError::InvalidContentFlag);
             }
@@ -467,6 +394,7 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S>
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::registry::PacketRegistry;
     use crate::stream::SilkroadTcpExt;
     use tokio::net::TcpSocket;
 
@@ -482,16 +410,26 @@ mod test {
         server.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let listen_addr = server.local_addr().unwrap();
         let server_listener = server.listen(0).unwrap();
+        let server_registry = PacketRegistry::builder()
+            .register_active_handshake()
+            .register::<Test>()
+            .build();
+
+        let client_registry = PacketRegistry::builder()
+            .register_passive_handshake()
+            .register::<Test>()
+            .build();
+
         let server_await = tokio::spawn(async move {
             let (client_socket, _) = server_listener.accept().await.unwrap();
-            let (mut reader, mut writer) = client_socket.into_silkroad_stream();
+            let (mut reader, mut writer) = client_socket.into_silkroad_stream(server_registry);
             ActiveSecuritySetup::handle(&mut reader, &mut writer)
                 .await
                 .unwrap();
             assert!(reader.encryption().is_some());
             assert!(writer.encryption().is_some());
-            let packet = reader.next_packet::<Test>().await.unwrap();
-            assert_eq!(packet.content, "Hello!");
+            let packet = reader.next_packet().await.unwrap();
+            assert_eq!(packet.into_packet::<Test>().unwrap().content, "Hello!");
         });
 
         let client = TcpSocket::new_v4()
@@ -499,7 +437,7 @@ mod test {
             .connect(listen_addr)
             .await
             .unwrap();
-        let (mut reader, mut writer) = client.into_silkroad_stream();
+        let (mut reader, mut writer) = client.into_silkroad_stream(client_registry);
         PassiveSecuritySetup::handle(&mut reader, &mut writer)
             .await
             .unwrap();
