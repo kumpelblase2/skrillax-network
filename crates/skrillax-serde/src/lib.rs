@@ -9,13 +9,13 @@
 pub mod error;
 mod time;
 
-use anymap::any::Any;
-use anymap::Map;
 use byteorder::ReadBytesExt;
 use bytes::{BufMut, BytesMut};
 pub use error::SerializationError;
 #[cfg(feature = "derive")]
 pub use skrillax_serde_derive::{ByteSize, Deserialize, Serialize};
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{Arc, RwLock};
 #[cfg(feature = "chrono")]
@@ -26,7 +26,6 @@ pub use time::SilkroadTime;
 // them also to add these as dependencies of their own. Yikes.
 #[doc(hidden)]
 pub mod __internal {
-    pub use anymap;
     pub use byteorder;
     pub use bytes;
 }
@@ -56,7 +55,7 @@ macro_rules! implement_primitive {
     };
 }
 
-type ContextMap = Map<dyn Any + Send + Sync>;
+type ContextMap = HashMap<TypeId, Box<dyn Any + Send + Sync>>;
 
 /// Context used during serialization and deserialization.
 ///
@@ -73,25 +72,29 @@ impl SerdeContext {
         Self { data }
     }
 
-    pub fn get<T: Any + Clone + Send + Sync + 'static>(&self) -> Option<T> {
+    pub fn get<T: Clone + 'static>(&self) -> Option<T> {
         let guard = self.data.read().expect("");
-        let res = guard.get::<T>();
-        res.cloned()
+        let option = guard.get(&TypeId::of::<T>()).map(|value| {
+            value
+                .downcast_ref()
+                .expect("Downcast to the same typeid should work.")
+        });
+        option.cloned()
     }
 
-    pub fn set<T: Any + Send + Sync + 'static>(&self, value: T) {
+    pub fn set<T: Send + Sync + 'static>(&self, value: T) {
         self.data
             .write()
             .expect("Lock should not be poisoned.")
-            .insert(value);
+            .insert(TypeId::of::<T>(), Box::new(value));
     }
 
-    pub fn unset<T: Any + Send + Sync + 'static>(&self) {
+    pub fn unset<T: 'static>(&self) {
         let _ = self
             .data
             .write()
             .expect("Lock should not be poisoned.")
-            .remove::<T>();
+            .remove(&TypeId::of::<T>());
     }
 }
 
@@ -105,7 +108,7 @@ impl Clone for SerdeContext {
 
 impl Default for SerdeContext {
     fn default() -> Self {
-        Self::new(Arc::new(RwLock::new(Map::new())))
+        Self::new(Arc::new(RwLock::new(ContextMap::new())))
     }
 }
 
@@ -300,5 +303,38 @@ mod test {
         assert_eq!(8, 1u64.byte_size());
         assert_eq!(4, 1.1f32.byte_size());
         assert_eq!(8, 1.1f64.byte_size());
+    }
+
+    #[test]
+    fn context_set_remove() {
+        let context = SerdeContext::default();
+
+        context.set(String::from("Hello!"));
+        let option = context.get::<String>();
+        assert!(option.is_some());
+        assert_eq!("Hello!", option.unwrap());
+        context.unset::<String>();
+        assert!(context.get::<String>().is_none());
+    }
+
+    #[test]
+    fn context_simple_struct() {
+        #[derive(Copy, Clone)]
+        struct MyData(u16);
+
+        let context = SerdeContext::default();
+        context.set(MyData(12));
+        let data = context
+            .get::<MyData>()
+            .expect("Context should have my data");
+        assert_eq!(12, data.0);
+
+        context.set(MyData(9));
+        let data = context
+            .get::<MyData>()
+            .expect("Context should have my data");
+        assert_eq!(9, data.0);
+        context.unset::<MyData>();
+        assert!(context.get::<MyData>().is_none());
     }
 }
