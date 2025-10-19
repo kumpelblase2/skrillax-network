@@ -71,7 +71,7 @@ use skrillax_serde::{ByteSize, Deserialize, SerializationError, Serialize};
 #[derive(Error, Debug)]
 pub enum PacketError {
     #[cfg(feature = "serde")]
-    #[error("An error occurred while trying to (de)serialize the packet")]
+    #[error("An error occurred while trying to (de)serialize the packet. {0:?}")]
     SerializationError(#[from] SerializationError),
     #[error(
         "An encrypted packet was either attempted to be sent or received, but no security has \
@@ -197,7 +197,7 @@ pub trait TryFromPacket {
 #[cfg(feature = "serde")]
 impl<T> TryFromPacket for T
 where
-    T: Packet + Deserialize + Send + Sized,
+    T: Packet + Deserialize,
 {
     fn try_deserialize(data: &[u8], ctx: &SerdeContext) -> Result<(usize, Self), PacketError> {
         use bytes::Buf;
