@@ -165,9 +165,9 @@ dependencies = [
 
 [[package]]
 name = "darling"
-version = "0.20.11"
+version = "0.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc7f46116c46ff9ab3eb1597a45688b6715c6e628b5c133e288e709a29bcb4ee"
+checksum = "9cdf337090841a411e2a7f3deb9187445851f91b309c0c0a29e05f74a00a48c0"
 dependencies = [
  "darling_core",
  "darling_macro",
@@ -175,9 +175,9 @@ dependencies = [
 
 [[package]]
 name = "darling_core"
-version = "0.20.11"
+version = "0.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d00b9596d185e565c2207a0b01f8bd1a135483d02d9b7b0a54b11da8d53412e"
+checksum = "1247195ecd7e3c85f83c8d2a366e4210d588e802133e1e355180a9870b517ea4"
 dependencies = [
  "fnv",
  "ident_case",
@@ -189,9 +189,9 @@ dependencies = [
 
 [[package]]
 name = "darling_macro"
-version = "0.20.11"
+version = "0.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
+checksum = "d38308df82d1080de0afee5d069fa14b0326a88c14f15c5ccda35b4a6c414c81"
 dependencies = [
  "darling_core",
  "quote",
@@ -204,7 +204,6 @@ version = "0.1.0"
 dependencies = [
  "byteorder",
  "bytes",
- "serde",
  "skrillax-packet",
  "skrillax-serde",
  "skrillax-stream",
@@ -644,10 +643,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 name = "simple-official-client"
 version = "0.1.0"
 dependencies = [
- "byteorder",
- "bytes",
  "chrono",
- "serde",
  "skrillax-packet",
  "skrillax-serde",
  "skrillax-stream",
@@ -667,7 +663,6 @@ dependencies = [
 name = "skrillax-packet"
 version = "0.3.0"
 dependencies = [
- "byteorder",
  "bytes",
  "skrillax-codec",
  "skrillax-packet-derive",
@@ -691,7 +686,6 @@ dependencies = [
 name = "skrillax-packet-derive-test"
 version = "0.1.0"
 dependencies = [
- "byteorder",
  "bytes",
  "skrillax-packet",
  "skrillax-serde",
@@ -714,7 +708,6 @@ dependencies = [
  "blowfish",
  "byteorder",
  "bytes",
- "once_cell",
  "rand",
  "thiserror",
 ]
@@ -824,18 +817,18 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "1.0.69"
+version = "2.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+checksum = "f63587ca0f12b72a0600bcba1d40081f830876000bb46dd2337a3051618f4fc8"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "1.0.69"
+version = "2.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+checksum = "3ff15c8ecd7de3849db632e14d18d2571fa09dfc5ed93479bc4485c7a517c913"
 dependencies = [
  "proc-macro2",
  "quote",
