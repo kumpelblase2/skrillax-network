@@ -85,6 +85,14 @@ impl SerdeContext {
             .expect("Lock should not be poisoned.")
             .insert(value);
     }
+
+    pub fn unset<T: Any + Send + Sync + 'static>(&self) {
+        let _ = self
+            .data
+            .write()
+            .expect("Lock should not be poisoned.")
+            .remove::<T>();
+    }
 }
 
 impl Clone for SerdeContext {
