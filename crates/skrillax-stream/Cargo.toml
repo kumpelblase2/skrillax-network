@@ -18,7 +18,7 @@ byteorder.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
 tokio-util = { version = "0.7", features = ["codec"] }
-tokio = { version = "1.42", features = ["net"] }
+tokio = { version = "1", features = ["net"] }
 skrillax-serde = { path = "../skrillax-serde", features = [
     "derive",
 ], version = "0.2.0" }
@@ -28,7 +28,7 @@ skrillax-packet = { path = "../skrillax-packet", features = [
 ], version = "0.3.0" }
 skrillax-codec = { path = "../skrillax-codec", version = "0.1.1" }
 futures = "0.3"
-bitflags = "2.5"
+bitflags = "2"
 
 [dev-dependencies]
-tokio = { version = "1.42", features = ["rt", "net", "macros"] }
+tokio = { version = "1", features = ["rt", "net", "macros"] }

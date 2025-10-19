@@ -13,9 +13,9 @@ keywords = ["silkroad", "security", "handshake"]
 independent = true
 
 [dependencies]
-blowfish = { version = "0.9.1" }
+blowfish = { version = "0.9" }
 bytes.workspace = true
 byteorder.workspace = true
 rand = "0.9"
 thiserror.workspace = true
-bitflags = "2.5"
+bitflags = "2"

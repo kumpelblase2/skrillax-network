@@ -13,7 +13,6 @@ independent = true
 skrillax-packet = { path = "../skrillax-packet", version = "0.3.0", features = ["derive"] }
 skrillax-serde = { path = "../skrillax-serde", version = "0.2.0", features = ["derive"] }
 bytes.workspace = true
-byteorder.workspace = true
 
 [lib]
 doctest = false
