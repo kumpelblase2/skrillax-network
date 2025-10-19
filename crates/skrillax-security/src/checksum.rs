@@ -110,7 +110,7 @@ impl Checksum {
     }
 
     /// Creates a [ChecksumBuilder] for a more fluent api.
-    pub fn builder(&self) -> ChecksumBuilder {
+    pub fn builder(&self) -> ChecksumBuilder<'_> {
         ChecksumBuilder::new(self.seed)
     }
 }
