@@ -10,7 +10,7 @@ independent = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-skrillax-serde = { path = "../skrillax-serde", features = ["derive"] }
+skrillax-serde = { path = "../skrillax-serde", version = "0.2.0", features = ["derive"] }
 bytes.workspace = true
 byteorder.workspace = true
 
