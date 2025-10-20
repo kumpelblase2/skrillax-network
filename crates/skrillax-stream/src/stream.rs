@@ -137,6 +137,12 @@ impl DynamicPacket {
     }
 }
 
+impl<T: Packet + Send + 'static> From<T> for DynamicPacket {
+    fn from(packet: T) -> Self {
+        Self(Box::new(packet))
+    }
+}
+
 #[derive(Default, Clone)]
 struct SharedState {
     encryption: Option<Arc<SilkroadEncryption>>,

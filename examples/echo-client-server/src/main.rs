@@ -1,6 +1,8 @@
 use skrillax_packet::Packet;
 use skrillax_serde::{ByteSize, Deserialize, Serialize};
-use skrillax_stream::handshake::{ActiveSecuritySetup, PassiveSecuritySetup, StaticRegistryExt};
+use skrillax_stream::handshake::{
+    ActiveSecuritySetup, HandshakePacketRegistryExt, PassiveSecuritySetup,
+};
 use skrillax_stream::registry::PacketRegistry;
 use skrillax_stream::stream::SilkroadTcpExt;
 use tokio::net::TcpSocket;

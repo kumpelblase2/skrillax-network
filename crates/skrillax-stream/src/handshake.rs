@@ -22,7 +22,7 @@
 //!  async fn test() {
 //! # use tokio::net::TcpSocket;
 //! # use skrillax_stream::stream::SilkroadTcpExt;
-//! # use skrillax_stream::handshake::StaticRegistryExt;
+//! # use skrillax_stream::handshake::HandshakePacketRegistryExt;
 //! # use skrillax_stream::handshake::ActiveSecuritySetup;
 //! # use skrillax_stream::handshake::PassiveSecuritySetup;
 //! # let listen_addr = "127.0.0.1:1337".parse().unwrap();
@@ -288,12 +288,23 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> ActiveSecuritySetup<'_, T, S> 
     }
 }
 
-pub trait StaticRegistryExt {
+/// Extension for the [PacketRegistryBuilder] to register the packets used in
+/// the handshake.
+///
+/// Depending on which side of the handshake we're on, one should either use
+/// [HandshakePacketRegistryExt::register_active_handshake] OR
+/// [HandshakePacketRegistryExt::register_passive_handshake], but never both.
+/// Use the function according to the side of the handshake being performed.
+/// I.e. when using [PassiveHandshake] / [PassiveSecuritySetup], use
+/// [HandshakePacketRegistryExt::register_passive_handshake], when using
+/// [ActiveHandshake] / [ActiveSecuritySetup] use
+/// [HandshakePacketRegistryExt::register_active_handshake].
+pub trait HandshakePacketRegistryExt {
     fn register_active_handshake(self) -> Self;
     fn register_passive_handshake(self) -> Self;
 }
 
-impl StaticRegistryExt for PacketRegistryBuilder {
+impl HandshakePacketRegistryExt for PacketRegistryBuilder {
     fn register_active_handshake(self) -> Self {
         self.register_incoming::<HandshakeChallenge>()
             .register_incoming::<HandshakeAccepted>()
