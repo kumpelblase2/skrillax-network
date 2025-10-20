@@ -136,13 +136,41 @@
 //!     greeting: Option<String>
 //! }
 //! ```
+//!
+//! ## Conditional Tag Evaluation for Enums
+//!
+//! For enums, you can use the `when` attribute to conditionally evaluate which
+//! variant to use based on the tag value. The tag value is available as `tag`
+//! in the condition expression.
+//!
+//! ```ignore
+//! #[derive(Serialize, ByteSize, Deserialize)]
+//! #[silkroad(size = 2)]
+//! enum TaggedEnum {
+//!     #[silkroad(when = "tag < 100")]
+//!     A {
+//!         #[silkroad(tag)]
+//!         value: u16,
+//!     },
+//!     #[silkroad(when = "tag >= 100")]
+//!     B {
+//!         #[silkroad(tag)]
+//!         value: u16,
+//!     },
+//! }
+//! ```
+//!
+//! When deserializing, the tag value is read first, and then the condition is
+//! evaluated to determine which variant to use. The tag value is also available
+//! for use in the variant's fields, so you can use it to fill in the value of
+//! the variant.
 
 use crate::deserialize::deserialize;
 use crate::serialize::serialize;
 use crate::size::size;
 use darling::{FromAttributes, FromDeriveInput};
 use proc_macro::TokenStream;
-use proc_macro_error::{abort, proc_macro_error};
+use proc_macro_error2::{abort, proc_macro_error};
 use quote::{quote, ToTokens};
 use syn::spanned::Spanned;
 use syn::{parse_macro_input, DeriveInput, Expr, GenericArgument, PathArguments, Type};
@@ -153,13 +181,16 @@ mod size;
 
 pub(crate) const DEFAULT_LIST_TYPE: &str = "length";
 
-#[derive(FromAttributes)]
+#[derive(FromAttributes, Default)]
 #[darling(attributes(silkroad))]
 pub(crate) struct FieldArgs {
     list_type: Option<String>,
     size: Option<usize>,
     value: Option<usize>,
     when: Option<String>,
+    calculate: Option<String>,
+    #[darling(default)]
+    tag: bool,
 }
 
 #[derive(FromDeriveInput)]
@@ -181,7 +212,7 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
 
     let output = quote! {
         impl skrillax_serde::Serialize for #ident {
-            fn write_to(&self, mut writer: &mut ::skrillax_serde::__internal::bytes::BytesMut) {
+            fn write_to(&self, mut writer: &mut ::skrillax_serde::__internal::bytes::BytesMut, ctx: &skrillax_serde::SerdeContext) {
                 #output
             }
         }
@@ -189,7 +220,7 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
         impl From<#ident> for ::skrillax_serde::__internal::bytes::Bytes {
             fn from(packet: #ident) -> ::skrillax_serde::__internal::bytes::Bytes {
                 let mut buffer = ::skrillax_serde::__internal::bytes::BytesMut::with_capacity(packet.byte_size());
-                packet.write_to(&mut buffer);
+                packet.write_to(&mut buffer, &skrillax_serde::SerdeContext::default());
                 buffer.freeze()
             }
         }
@@ -208,7 +239,7 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     let output = deserialize(&ident, &data, args);
     let output = quote! {
         impl skrillax_serde::Deserialize for #ident {
-            fn read_from<T: std::io::Read + ::skrillax_serde::__internal::byteorder::ReadBytesExt>(mut reader: &mut T) -> Result<Self, skrillax_serde::SerializationError> {
+            fn read_from<T: std::io::Read + ::skrillax_serde::__internal::byteorder::ReadBytesExt>(mut reader: &mut T, ctx: &skrillax_serde::SerdeContext) -> Result<Self, skrillax_serde::SerializationError> {
                 #output
             }
         }
@@ -219,7 +250,7 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
             fn try_from(data: ::skrillax_serde::__internal::bytes::Bytes) -> Result<Self, Self::Error> {
                 use ::skrillax_serde::__internal::bytes::Buf;
                 let mut data_reader = data.reader();
-                #ident::read_from(&mut data_reader)
+                #ident::read_from(&mut data_reader, &skrillax_serde::SerdeContext::default())
             }
         }
     };
@@ -255,7 +286,7 @@ pub(crate) enum UsedType<'a> {
     Tuple(Vec<&'a Type>),
 }
 
-pub(crate) fn get_type_of(ty: &Type) -> UsedType {
+pub(crate) fn get_type_of(ty: &Type) -> UsedType<'_> {
     match ty {
         Type::Array(arr) => UsedType::Array(&arr.len),
         Type::Reference(_) => abort!(ty, "References are not supported for (de)serialization."),
@@ -342,5 +373,5 @@ fn get_variant_value<T: Spanned + ToTokens>(source: &T, value: usize, size: usiz
         8 => "u64",
         _ => abort!(source, "Unknown size"),
     };
-    syn::parse_str(&format!("{}{}", value, ty)).expect("Should be able to parse a typed number")
+    syn::parse_str(&format!("{value}{ty}")).expect("Should be able to parse a typed number")
 }

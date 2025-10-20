@@ -1,6 +1,6 @@
 [package]
 name = "skrillax-stream"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["kumpelblase2"]
 description = "Combines skrillax-network crates to work nicely on top of a tokio tcp stream"
@@ -18,19 +18,17 @@ byteorder.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
 tokio-util = { version = "0.7", features = ["codec"] }
-log = "0.4"
-tokio = { version = "1.42", features = ["net"] }
-crossbeam-channel = "0.5"
+tokio = { version = "1", features = ["net"] }
 skrillax-serde = { path = "../skrillax-serde", features = [
     "derive",
-], version = "0.2.0" }
+], version = "0.3.0" }
 skrillax-packet = { path = "../skrillax-packet", features = [
     "serde",
     "derive",
-], version = "0.3.0" }
+], version = "0.4.0" }
 skrillax-codec = { path = "../skrillax-codec", version = "0.1.1" }
 futures = "0.3"
-bitflags = "2.5"
+bitflags = "2"
 
 [dev-dependencies]
-tokio = { version = "1.42", features = ["rt", "net", "macros"] }
+tokio = { version = "1", features = ["rt", "net", "macros"] }

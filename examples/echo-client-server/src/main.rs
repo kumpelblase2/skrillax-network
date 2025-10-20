@@ -1,6 +1,9 @@
 use skrillax_packet::Packet;
 use skrillax_serde::{ByteSize, Deserialize, Serialize};
-use skrillax_stream::handshake::{ActiveSecuritySetup, PassiveSecuritySetup};
+use skrillax_stream::handshake::{
+    ActiveSecuritySetup, HandshakePacketRegistryExt, PassiveSecuritySetup,
+};
+use skrillax_stream::registry::PacketRegistry;
 use skrillax_stream::stream::SilkroadTcpExt;
 use tokio::net::TcpSocket;
 
@@ -27,11 +30,17 @@ fn start_server() {
             .accept()
             .await
             .expect("Should be able to accept client.");
-        let (mut reader, mut writer) = client.into_silkroad_stream();
+        let server_registry = PacketRegistry::builder()
+            .register_active_handshake()
+            .register_incoming::<ClientHello>()
+            .register_outgoing::<ServerHello>()
+            .build();
+        let (mut reader, mut writer) = client.into_silkroad_stream(server_registry);
         ActiveSecuritySetup::handle(&mut reader, &mut writer)
             .await
             .expect("Security setup should be handled.");
-        let packet = reader.next_packet::<ClientHello>().await.unwrap();
+        let received_packet = reader.next_packet().await.unwrap();
+        let packet = received_packet.into_packet::<ClientHello>().unwrap();
         writer
             .write_packet(ServerHello(format!("Hello {} from server :)", packet.0)))
             .await
@@ -45,7 +54,12 @@ async fn run_client() {
         .connect("127.0.0.1:9999".parse().unwrap())
         .await
         .unwrap();
-    let (mut reader, mut writer) = client.into_silkroad_stream();
+    let client_registry = PacketRegistry::builder()
+        .register_passive_handshake()
+        .register_outgoing::<ClientHello>()
+        .register_incoming::<ServerHello>()
+        .build();
+    let (mut reader, mut writer) = client.into_silkroad_stream(client_registry);
     PassiveSecuritySetup::handle(&mut reader, &mut writer)
         .await
         .expect("Security setup should be handled.");
@@ -53,9 +67,10 @@ async fn run_client() {
         .write_packet(ClientHello(String::from("Test Client")))
         .await
         .unwrap();
-    let packet = reader
-        .next_packet::<ServerHello>()
+    let received_packet = reader
+        .next_packet()
         .await
         .expect("Should receive the hello.");
+    let packet = received_packet.into_packet::<ServerHello>().unwrap();
     println!("Received from server: {}", packet.0);
 }

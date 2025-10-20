@@ -1,7 +1,7 @@
 use crate::{get_type_of, get_variant_value, FieldArgs, SilkroadArgs, UsedType, DEFAULT_LIST_TYPE};
 use darling::FromAttributes;
 use proc_macro2::{Ident, TokenStream};
-use proc_macro_error::abort;
+use proc_macro_error2::abort;
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{Data, Field, Fields, Index, Variant};
@@ -55,35 +55,40 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
     let Ok(args) = FieldArgs::from_attributes(&field.attrs) else {
         abort!(field, "Could not parse field attributes.");
     };
+
+    if args.tag {
+        abort!(field, "Tagged fields are not supported for structs.");
+    }
+
     match ty {
         UsedType::Primitive => {
             quote_spanned! {field.span() =>
-                #ident.write_to(writer);
+                #ident.write_to(writer, ctx);
             }
         },
         UsedType::String => {
             let content = match args.size.unwrap_or(1) {
                 1 => quote! {
                     for skrillax_serde_byte in #ident.as_bytes() {
-                        skrillax_serde_byte.write_to(writer);
+                        skrillax_serde_byte.write_to(writer, ctx);
                     }
                 },
                 2 => quote! {
                     for skrillax_serde_utf_char in #ident.encode_utf16() {
-                        skrillax_serde_utf_char.write_to(writer);
+                        skrillax_serde_utf_char.write_to(writer, ctx);
                     }
                 },
                 _ => abort!(field, "Unknown String length"),
             };
             quote_spanned! {field.span() =>
-                (#ident.len() as u16).write_to(writer);
+                (#ident.len() as u16).write_to(writer, ctx);
                 #content
             }
         },
         UsedType::Array(_) => {
             quote_spanned! {field.span() =>
                 for skrillax_serde_inner in #ident {
-                    skrillax_serde_inner.write_to(writer);
+                    skrillax_serde_inner.write_to(writer, ctx);
                 }
             }
         },
@@ -91,11 +96,11 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
             let length_type = args.list_type.as_deref().unwrap_or(DEFAULT_LIST_TYPE);
             // TODO: this does not handle double length strings.
             let inner_ty = match get_type_of(inner) {
-                UsedType::Primitive => quote!(skrillax_serde_inner.write_to(writer)),
+                UsedType::Primitive => quote!(skrillax_serde_inner.write_to(writer, ctx)),
                 UsedType::String => quote! {
-                    (skrillax_serde_inner.len() as u16).write_to(writer);
+                    (skrillax_serde_inner.len() as u16).write_to(writer, ctx);
                     for skrillax_serde_byte in skrillax_serde_inner.as_bytes() {
-                        skrillax_serde_byte.write_to(writer);
+                        skrillax_serde_byte.write_to(writer, ctx);
                     }
                 },
                 _ => abort!(field, "Cannot nest collection-like types"),
@@ -107,20 +112,20 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
                 let break_lit = get_variant_value(&ident, 2, size);
                 quote_spanned! {field.span() =>
                     for skrillax_serde_inner in #ident.iter() {
-                        #continue_lit.write_to(writer);
+                        #continue_lit.write_to(writer, ctx);
                         #inner_ty;
                     }
-                    #break_lit.write_to(writer);
+                    #break_lit.write_to(writer, ctx);
                 }
             } else if length_type == "has-more" {
                 let continue_lit = get_variant_value(&ident, 1, size);
                 let break_lit = get_variant_value(&ident, 0, size);
                 quote_spanned! {field.span() =>
                     for skrillax_serde_inner in #ident.iter() {
-                        #continue_lit.write_to(writer);
+                        #continue_lit.write_to(writer, ctx);
                         #inner_ty;
                     }
-                    #break_lit.write_to(writer);
+                    #break_lit.write_to(writer, ctx);
                 }
             } else if length_type == "length" {
                 let size_type = match size {
@@ -131,7 +136,7 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
                     _ => abort!(ident, "Could not determine size for list."),
                 };
                 quote_spanned! {field.span() =>
-                    (#ident.len() as #size_type).write_to(writer);
+                    (#ident.len() as #size_type).write_to(writer, ctx);
                     for skrillax_serde_inner in #ident.iter() {
                         #inner_ty;
                     }
@@ -147,11 +152,11 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
         UsedType::Option(inner) => {
             // TODO: this does not handle double length strings.
             let inner_ty = match get_type_of(inner) {
-                UsedType::Primitive => quote!(skrillax_serde_inner.write_to(writer)),
+                UsedType::Primitive => quote!(skrillax_serde_inner.write_to(writer, ctx)),
                 UsedType::String => quote! {
-                    (skrillax_serde_inner.len() as u16).write_to(writer);
+                    (skrillax_serde_inner.len() as u16).write_to(writer, ctx);
                     for skrillax_serde_byte in skrillax_serde_inner.as_bytes() {
-                        skrillax_serde_byte.write_to(writer);
+                        skrillax_serde_byte.write_to(writer, ctx);
                     }
                 },
                 _ => abort!(field, "Cannot nest collection-like types"),
@@ -169,10 +174,10 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
                 quote_spanned! {field.span() =>
                     match &#ident {
                         Some(skrillax_serde_inner) => {
-                            1u8.write_to(writer);
+                            1u8.write_to(writer, ctx);
                             #inner_ty;
                         },
-                        None => 0u8.write_to(writer),
+                        None => 0u8.write_to(writer, ctx),
                     }
                 }
             }
@@ -184,7 +189,7 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
 
             quote_spanned! {field.span() =>
                 let (#(#def),*) = &#ident;
-                #(#def.write_to(writer);)*
+                #(#def.write_to(writer, ctx);)*
             }
         },
     }
@@ -196,12 +201,71 @@ fn generate_for_variant(ident: &Ident, variant: &Variant, size: usize) -> TokenS
     };
     let variant_name = &variant.ident;
     let value_output = if size > 0 {
-        let value = attributes
-            .value
-            .expect("When size is not zero, value should be set.");
-        let value = get_variant_value(variant_name, value, size);
-        quote_spanned! { variant_name.span() =>
-            #value.write_to(writer);
+        if attributes.value.is_none() && attributes.when.is_none() {
+            abort!(
+                variant,
+                "When size is not zero, either value or when should be set."
+            );
+        }
+
+        // For variants with a when attribute, we need to determine the value at runtime
+        // For serialization, we'll just use the first field's value as the tag
+        if attributes.when.is_some() {
+            match &variant.fields {
+                Fields::Named(fields) if !fields.named.is_empty() => {
+                    let relevant_field = fields
+                        .named
+                        .iter()
+                        .map(|field| {
+                            (
+                                field,
+                                FieldArgs::from_attributes(&field.attrs).unwrap_or_default(),
+                            )
+                        })
+                        .find(|(_, args)| args.tag)
+                        .map(|(f, _)| f)
+                        .unwrap_or(fields.named.first().unwrap());
+
+                    let first_field_ident = relevant_field.ident.as_ref().unwrap();
+                    quote_spanned! { variant_name.span() =>
+                        #first_field_ident.write_to(writer, ctx);
+                    }
+                },
+                Fields::Unnamed(fields) if !fields.unnamed.is_empty() => {
+                    let relevant_field_index = fields
+                        .unnamed
+                        .iter()
+                        .enumerate()
+                        .map(|(index, field)| {
+                            (
+                                index,
+                                FieldArgs::from_attributes(&field.attrs).unwrap_or_default(),
+                            )
+                        })
+                        .find(|(_, args)| args.tag)
+                        .map(|(f, _)| f)
+                        .unwrap_or(0);
+
+                    let first_field_ident = format_ident!("t{relevant_field_index}");
+
+                    quote_spanned! { variant_name.span() =>
+                        #first_field_ident.write_to(writer, ctx);
+                    }
+                },
+                _ => {
+                    abort!(
+                        variant,
+                        "When using 'when' attribute, the variant must have at least one field to \
+                         use as the tag value."
+                    );
+                },
+            }
+        } else {
+            let value = attributes.value.unwrap();
+            let value = get_variant_value(variant_name, value, size);
+            quote_spanned! { variant_name.span() =>
+                #value.write_to(writer, ctx);
+            }
         }
     } else {
         quote!()
@@ -223,6 +287,7 @@ fn generate_for_variant(ident: &Ident, variant: &Variant, size: usize) -> TokenS
                 .named
                 .iter()
                 .zip(&idents)
+                .filter(|(f, _)| !FieldArgs::from_attributes(&f.attrs).unwrap_or_default().tag)
                 .map(|(field, ident)| generate_for_field(field, quote!(#ident)));
 
             quote_spanned! {variant_name.span()=>
@@ -240,6 +305,7 @@ fn generate_for_variant(ident: &Ident, variant: &Variant, size: usize) -> TokenS
                 .unnamed
                 .iter()
                 .zip(&idents)
+                .filter(|(f, _)| !FieldArgs::from_attributes(&f.attrs).unwrap_or_default().tag)
                 .map(|(field, ident)| generate_for_field(field, quote!(#ident)));
 
             quote_spanned! {variant_name.span()=>

@@ -1,11 +1,17 @@
+use crate::context::{LastReceivedPacket, LastSentPacket};
+use crate::registry::PacketRegistry;
 use bytes::Bytes;
 use futures::{SinkExt, Stream, StreamExt};
 use skrillax_codec::{SilkroadCodec, SilkroadFrame};
 use skrillax_packet::{
     AsFrames, FramingError, FromFrames, IncomingPacket, OutgoingPacket, Packet, PacketError,
-    ReframingError, SecurityBytes, SecurityContext, TryFromPacket,
+    ReframingError, SecurityBytes, SecurityContext,
 };
 use skrillax_security::SilkroadEncryption;
+use skrillax_serde::SerdeContext;
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::io;
 use std::sync::Arc;
 use thiserror::Error;
@@ -29,6 +35,8 @@ pub enum OutStreamError {
     /// be built, but no encryption has been configured.
     #[error("Error occurred when trying to create frames")]
     Framing(#[from] FramingError),
+    #[error("Opcode {0} was not registered.")]
+    UnknownOpcode(u16),
 }
 
 /// Errors encountered when reading packets.
@@ -41,9 +49,9 @@ pub enum InStreamError {
     ///
     /// When the underlying transport layer was disconnected or had other
     /// issues while trying to read data, this error occurs.
-    #[error("Some IO level error occurred")]
+    #[error("Some IO level error occurred. {0:?}")]
     IoError(#[from] io::Error),
-    #[error("Error occurred at the packet level")]
+    #[error("Error occurred at the packet level. {0:?}")]
     PacketError(#[from] PacketError),
     #[error("Error when trying to turn frames into packets")]
     ReframingError(#[from] ReframingError),
@@ -56,30 +64,6 @@ pub enum InStreamError {
     UnmatchedOpcode(u16),
 }
 
-/// An [InputProtocol] is a trait which can be used to deserialize a single
-/// operation given its opcode. A protocol is assumed to support multiple
-/// opcodes as it is assumed to be applicable to any operation present on
-/// a stream. Generally, [InputProtocol::Proto] will be an enum to reflect
-/// that fact.
-pub trait InputProtocol {
-    /// The type of all possible values we can create
-    type Proto: Send;
-
-    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, Self::Proto), InStreamError>;
-}
-
-impl<T: TryFromPacket + Packet + Send> InputProtocol for T {
-    type Proto = T;
-
-    fn create_from(opcode: u16, data: &[u8]) -> Result<(usize, T), InStreamError> {
-        if opcode != T::ID {
-            return Err(InStreamError::UnmatchedOpcode(opcode));
-        }
-
-        Ok(T::try_deserialize(data)?)
-    }
-}
-
 /// Extensions to [TcpStream] to convert it into a silkroad stream, sending
 /// and receiving silkroad packets.
 pub trait SilkroadTcpExt {
@@ -88,17 +72,20 @@ pub trait SilkroadTcpExt {
     ///
     /// ```
     /// # use std::error::Error;
+    /// # use skrillax_stream::registry::PacketRegistry;
     /// use skrillax_stream::stream::SilkroadTcpExt;
     ///
     /// # async fn test() -> Result<(), Box<dyn Error>> {
     /// # use tokio::net::TcpStream;
     /// let stream = TcpStream::connect("127.0.0.1:1337").await?;
-    /// let (reader, writer) = stream.into_silkroad_stream();
+    /// let registry = PacketRegistry::builder().build();
+    /// let (reader, writer) = stream.into_silkroad_stream(registry);
     /// # Ok(())
     /// # }
     /// ```
     fn into_silkroad_stream(
         self,
+        registry: PacketRegistry,
     ) -> (
         SilkroadStreamRead<OwnedReadHalf>,
         SilkroadStreamWrite<OwnedWriteHalf>,
@@ -108,6 +95,7 @@ pub trait SilkroadTcpExt {
 impl SilkroadTcpExt for TcpStream {
     fn into_silkroad_stream(
         self,
+        registry: PacketRegistry,
     ) -> (
         SilkroadStreamRead<OwnedReadHalf>,
         SilkroadStreamWrite<OwnedWriteHalf>,
@@ -116,10 +104,114 @@ impl SilkroadTcpExt for TcpStream {
         let reader = FramedRead::new(read, SilkroadCodec);
         let writer = FramedWrite::new(write, SilkroadCodec);
 
-        let stream_reader = SilkroadStreamRead::new(reader);
-        let stream_writer = SilkroadStreamWrite::new(writer);
+        let state = SharedState::new();
+        let stream_reader = SilkroadStreamRead::new(reader, registry.clone(), state.clone());
+        let stream_writer = SilkroadStreamWrite::new(writer, registry, state);
 
         (stream_reader, stream_writer)
+    }
+}
+
+pub struct DynamicPacket(pub(crate) Box<dyn Any + Send>);
+
+impl Debug for DynamicPacket {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "dynamic packet")
+    }
+}
+
+impl DynamicPacket {
+    pub fn as_packet<T: 'static>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
+
+    pub fn into_packet<T: 'static>(self) -> Result<T, DynamicPacket> {
+        match self.0.downcast::<T>() {
+            Ok(b) => Ok(*b),
+            Err(b) => Err(DynamicPacket(b)),
+        }
+    }
+
+    pub fn packet_type(&self) -> TypeId {
+        self.0.as_ref().type_id()
+    }
+}
+
+impl<T: Packet + Send + 'static> From<T> for DynamicPacket {
+    fn from(packet: T) -> Self {
+        Self(Box::new(packet))
+    }
+}
+
+#[derive(Default, Clone)]
+struct SharedState {
+    encryption: Option<Arc<SilkroadEncryption>>,
+    security_bytes: Option<Arc<SecurityBytes>>,
+    state: SerdeContext,
+}
+
+impl SharedState {
+    fn new() -> Self {
+        Self {
+            encryption: None,
+            security_bytes: None,
+            state: SerdeContext::default(),
+        }
+    }
+
+    fn as_context(&self) -> SerdeContext {
+        self.state.clone()
+    }
+
+    pub fn set_last_received(&self, opcode: u16) {
+        self.state.set(LastReceivedPacket(opcode))
+    }
+
+    pub fn set_last_sent(&self, opcode: u16) {
+        self.state.set(LastSentPacket(opcode))
+    }
+}
+
+#[derive(Default)]
+struct WriteCallbacks {
+    before_write_frame: Vec<Box<dyn Fn(&OutgoingPacket, &SerdeContext) + Send>>,
+    before_write_packet: HashMap<TypeId, Box<dyn Fn(&DynamicPacket, &SerdeContext) + Send>>,
+}
+
+impl WriteCallbacks {
+    fn register_frame_callback<F: Fn(&OutgoingPacket, &SerdeContext) + Send + 'static>(
+        &mut self,
+        func: F,
+    ) {
+        self.before_write_frame.push(Box::new(func));
+    }
+
+    fn call_for_frame(&self, packet: &OutgoingPacket, context: &SerdeContext) {
+        for handler in &self.before_write_frame {
+            handler(packet, context);
+        }
+    }
+
+    fn register_packet_callback<T: 'static, F: Fn(&T, &SerdeContext) + Send + 'static>(
+        &mut self,
+        func: F,
+    ) {
+        let type_id = TypeId::of::<T>();
+        let wrapper = Box::new(move |any_packet: &DynamicPacket, ctx: &SerdeContext| {
+            let packet = any_packet
+                .as_packet::<T>()
+                .expect("T should match it's type id");
+            func(packet, ctx);
+        });
+        self.before_write_packet.insert(type_id, wrapper);
+    }
+
+    fn call_for_packet(&self, packet: &DynamicPacket, context: &SerdeContext) {
+        let Some(handler) = self.before_write_packet.get(&packet.packet_type()) else {
+            return;
+        };
+
+        handler(packet, context);
     }
 }
 
@@ -129,53 +221,80 @@ impl SilkroadTcpExt for TcpStream {
 /// facilitate a Silkroad connection, such as encryption.
 pub struct SilkroadStreamWrite<T: AsyncWrite + Unpin> {
     writer: FramedWrite<T, SilkroadCodec>,
-    encryption: Option<Arc<SilkroadEncryption>>,
-    security_bytes: Option<Arc<SecurityBytes>>,
+    registry: PacketRegistry,
+    state: SharedState,
+    write_callbacks: WriteCallbacks,
 }
 
 impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
-    fn new(writer: FramedWrite<T, SilkroadCodec>) -> Self {
+    fn new(
+        writer: FramedWrite<T, SilkroadCodec>,
+        registry: PacketRegistry,
+        state: SharedState,
+    ) -> Self {
         Self {
             writer,
-            encryption: None,
-            security_bytes: None,
+            state,
+            registry,
+            write_callbacks: WriteCallbacks::default(),
         }
     }
 
     #[allow(unused)]
     fn with_encryption(
         writer: FramedWrite<T, SilkroadCodec>,
+        registry: PacketRegistry,
         encryption: Arc<SilkroadEncryption>,
         security_bytes: Arc<SecurityBytes>,
     ) -> Self {
         Self {
             writer,
-            encryption: Some(encryption),
-            security_bytes: Some(security_bytes),
+            registry,
+            state: SharedState {
+                encryption: Some(encryption),
+                security_bytes: Some(security_bytes),
+                state: SerdeContext::default(),
+            },
+            write_callbacks: WriteCallbacks::default(),
         }
     }
 
     pub fn enable_encryption(&mut self, encryption: Arc<SilkroadEncryption>) {
-        self.encryption = Some(encryption);
+        self.state.encryption = Some(encryption);
     }
 
     pub fn enable_security_checks(&mut self, security_bytes: Arc<SecurityBytes>) {
-        self.security_bytes = Some(security_bytes);
+        self.state.security_bytes = Some(security_bytes);
+    }
+
+    pub fn on_before_write<F: Fn(&OutgoingPacket, &SerdeContext) + Send + 'static>(
+        &mut self,
+        f: F,
+    ) {
+        self.write_callbacks.register_frame_callback(f);
+    }
+
+    pub fn on_before_send<P: Packet + 'static, F: Fn(&P, &SerdeContext) + Send + 'static>(
+        &mut self,
+        f: F,
+    ) {
+        self.write_callbacks.register_packet_callback(f);
     }
 
     pub fn encryption(&self) -> Option<&SilkroadEncryption> {
-        self.encryption.as_deref()
+        self.state.encryption.as_deref()
     }
 
     pub fn security_bytes(&self) -> Option<&SecurityBytes> {
-        self.security_bytes.as_deref()
+        self.state.security_bytes.as_deref()
     }
 
-    pub fn security_context(&self) -> SecurityContext {
+    pub fn security_context(&self) -> SecurityContext<'_> {
         SecurityContext::new(self.encryption(), self.security_bytes())
     }
 
     pub async fn write(&mut self, packet: OutgoingPacket) -> Result<(), OutStreamError> {
+        self.state.set_last_sent(packet.opcode());
         let frames = packet.as_frames(self.security_context())?;
         for frame in frames {
             self.writer.send(frame).await?;
@@ -183,12 +302,65 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
         Ok(())
     }
 
-    pub async fn write_packet<S: Into<OutgoingPacket>>(
+    pub async fn write_packet<S: Packet + Send + 'static>(
         &mut self,
         packet: S,
     ) -> Result<(), OutStreamError> {
-        let outgoing_packet = packet.into();
+        let context = self.state.as_context();
+        let packet = DynamicPacket(Box::new(packet));
+        self.write_callbacks.call_for_packet(&packet, &context);
+        let opcode = S::ID;
+        let outgoing_packet = self.registry.encode(opcode, packet, &context)?;
+        self.write_callbacks
+            .call_for_frame(&outgoing_packet, &context);
         self.write(outgoing_packet).await
+    }
+
+    pub fn context(&self) -> SerdeContext {
+        self.state.as_context()
+    }
+}
+
+#[derive(Default)]
+struct ReadCallbacks {
+    after_read_frame: Vec<Box<dyn Fn(&IncomingPacket, &SerdeContext) + Send + 'static>>,
+    after_read_packet: HashMap<TypeId, Box<dyn Fn(&DynamicPacket, &SerdeContext) + Send + 'static>>,
+}
+
+impl ReadCallbacks {
+    fn register_frame_callback<F: Fn(&IncomingPacket, &SerdeContext) + Send + 'static>(
+        &mut self,
+        func: F,
+    ) {
+        self.after_read_frame.push(Box::new(func));
+    }
+
+    fn call_for_frame(&self, packet: &IncomingPacket, context: &SerdeContext) {
+        for handler in &self.after_read_frame {
+            handler(packet, context);
+        }
+    }
+
+    fn register_packet_callback<T: 'static, F: Fn(&T, &SerdeContext) + Send + 'static>(
+        &mut self,
+        func: F,
+    ) {
+        let type_id = TypeId::of::<T>();
+        let wrapper = Box::new(move |any_packet: &DynamicPacket, ctx: &SerdeContext| {
+            let packet = any_packet
+                .as_packet::<T>()
+                .expect("T should match it's type id");
+            func(packet, ctx);
+        });
+        self.after_read_packet.insert(type_id, wrapper);
+    }
+
+    fn call_for_packet(&self, packet: &DynamicPacket, context: &SerdeContext) {
+        let Some(handler) = self.after_read_packet.get(&packet.packet_type()) else {
+            return;
+        };
+
+        handler(packet, context);
     }
 }
 
@@ -198,35 +370,48 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
 /// facilitate a Silkroad connection, such as encryption.
 pub struct SilkroadStreamRead<T: AsyncRead + Unpin> {
     reader: FramedRead<T, SilkroadCodec>,
-    encryption: Option<Arc<SilkroadEncryption>>,
-    security_bytes: Option<Arc<SecurityBytes>>,
+    registry: PacketRegistry,
+    state: SharedState,
     unconsumed: Option<(u16, Bytes)>,
+    read_callbacks: ReadCallbacks,
 }
 
 impl<T: AsyncRead + Unpin> SilkroadStreamRead<T>
 where
     FramedRead<T, SilkroadCodec>: Stream<Item = Result<SilkroadFrame, io::Error>>,
 {
-    fn new(reader: FramedRead<T, SilkroadCodec>) -> Self {
+    fn new(
+        reader: FramedRead<T, SilkroadCodec>,
+        registry: PacketRegistry,
+        state: SharedState,
+    ) -> Self {
         Self {
             reader,
-            encryption: None,
-            security_bytes: None,
+            state,
+            registry,
             unconsumed: None,
+            read_callbacks: ReadCallbacks::default(),
         }
     }
 
     #[allow(unused)]
     fn with_encryption(
         reader: FramedRead<T, SilkroadCodec>,
+        registry: PacketRegistry,
         encryption: Arc<SilkroadEncryption>,
         security_bytes: Arc<SecurityBytes>,
+        state: SerdeContext,
     ) -> Self {
         Self {
             reader,
-            encryption: Some(encryption),
-            security_bytes: Some(security_bytes),
+            registry,
+            state: SharedState {
+                encryption: Some(encryption),
+                security_bytes: Some(security_bytes),
+                state,
+            },
             unconsumed: None,
+            read_callbacks: ReadCallbacks::default(),
         }
     }
 
@@ -240,7 +425,7 @@ where
     /// An [Arc] is expected here because it is assumed that the same encryption
     /// will be set on the write half as well.
     pub fn enable_encryption(&mut self, encryption: Arc<SilkroadEncryption>) {
-        self.encryption = Some(encryption);
+        self.state.encryption = Some(encryption);
     }
 
     /// Enables additional security checks for this stream.
@@ -252,17 +437,17 @@ where
     /// An [Arc] is expected here because it is assumed that the same encryption
     /// will be set on the write half as well.
     pub fn enable_security_checks(&mut self, security_bytes: Arc<SecurityBytes>) {
-        self.security_bytes = Some(security_bytes);
+        self.state.security_bytes = Some(security_bytes);
     }
 
     /// Provides the currently set encryption configuration, if present.
     pub fn encryption(&self) -> Option<&SilkroadEncryption> {
-        self.encryption.as_deref()
+        self.state.encryption.as_deref()
     }
 
     /// Provides the currently set security data, if present.
     pub fn security_bytes(&self) -> Option<&SecurityBytes> {
-        self.security_bytes.as_deref()
+        self.state.security_bytes.as_deref()
     }
 
     /// Provides the security context present for the reader.
@@ -272,8 +457,19 @@ where
     /// [SilkroadStreamRead::security_bytes] data inside. Essentially, this
     /// is a convenience wrapper around those functions to provide
     /// a single struct that can be passed around.
-    pub fn security_context(&self) -> SecurityContext {
+    pub fn security_context(&self) -> SecurityContext<'_> {
         SecurityContext::new(self.encryption(), self.security_bytes())
+    }
+
+    pub fn on_after_read<F: Fn(&IncomingPacket, &SerdeContext) + Send + 'static>(&mut self, f: F) {
+        self.read_callbacks.register_frame_callback(f);
+    }
+
+    pub fn on_after_receive<P: Packet + 'static, F: Fn(&P, &SerdeContext) + Send + 'static>(
+        &mut self,
+        f: F,
+    ) {
+        self.read_callbacks.register_packet_callback(f);
     }
 
     /// Read the next packet and handle re-framing.
@@ -300,7 +496,10 @@ where
             remaining -= 1;
             if remaining == 0 {
                 match IncomingPacket::from_frames(&buffer, self.security_context()) {
-                    Ok(packet) => return Ok(packet),
+                    Ok(packet) => {
+                        self.read_callbacks.call_for_frame(&packet, &self.context());
+                        return Ok(packet);
+                    },
                     Err(ReframingError::Incomplete(required)) => {
                         remaining += required.unwrap_or(1);
                     },
@@ -319,23 +518,26 @@ where
     /// protocol. We expect that all packets are part of the given protocol,
     /// otherwise it will be _discarded_ and [InStreamError::UnmatchedOpcode]
     /// will be returned.
-    ///
-    /// Since [InputProtocol] is automatically derived for structs that have
-    /// [skrillax_packet::Packet] & [skrillax_serde::Deserialize], you can
-    /// both expect a single packet and a full protocol here.
-    pub async fn next_packet<S: InputProtocol>(&mut self) -> Result<S::Proto, InStreamError> {
+    pub async fn next_packet(&mut self) -> Result<DynamicPacket, InStreamError> {
         let (opcode, mut buffer) = match self.unconsumed.take() {
             Some(inner) => inner,
             _ => self.next().await?.consume(),
         };
 
-        let (consumed, p) = S::create_from(opcode, &buffer)?;
+        let context = self.context();
+        let (consumed, p) = self.registry.decode(opcode, &buffer, &context)?;
         let _ = buffer.split_to(consumed);
         if !buffer.is_empty() {
             self.unconsumed = Some((opcode, buffer));
         }
 
+        self.read_callbacks.call_for_packet(&p, &context);
+        self.state.set_last_received(opcode);
         Ok(p)
+    }
+
+    pub fn context(&self) -> SerdeContext {
+        self.state.as_context()
     }
 }
 
@@ -344,24 +546,50 @@ mod test {
     use super::*;
     use skrillax_serde::{ByteSize, Deserialize, Serialize};
 
+    #[derive(Copy, Clone, Default)]
+    struct CustomFlag(u8);
+
     #[derive(Packet, Deserialize, Serialize, ByteSize)]
     #[packet(opcode = 0x0042)]
     struct Empty;
 
+    #[derive(Packet, Deserialize, Serialize, ByteSize)]
+    #[packet(opcode = 0x0043)]
+    #[silkroad(size = 0)]
+    enum Conditional {
+        // Ordering matters when using when given that it's just `if` clauses.
+        #[silkroad(when = "ctx.get::<CustomFlag>().unwrap_or_default().0 == 1")]
+        Third(u8),
+        #[silkroad(when = "crate::context::last_sent_packet_is(ctx, 0x0042)")]
+        First(u8),
+        #[silkroad(when = "crate::context::last_sent_packet_is(ctx, 0x0043)")]
+        Second(u8),
+    }
+
     #[tokio::test]
     pub async fn test_read_packet_from_stream() {
         let buffer: &[u8] = &[0x00, 0x00, 0x42, 0x00, 0x00, 0x00];
-        let mut reader = SilkroadStreamRead::new(FramedRead::new(buffer, SilkroadCodec));
-        let _ = reader
-            .next_packet::<Empty>()
+        let registry = PacketRegistry::builder().register::<Empty>().build();
+        let mut reader = SilkroadStreamRead::new(
+            FramedRead::new(buffer, SilkroadCodec),
+            registry,
+            SharedState::new(),
+        );
+        let p = reader
+            .next_packet()
             .await
             .expect("Should read empty packet.");
+        assert!(p.into_packet::<Empty>().is_ok());
     }
 
     #[tokio::test]
     pub async fn test_write_packet_to_stream() {
         let mut buffer: Vec<u8> = Vec::new();
-        let mut writer = SilkroadStreamWrite::new(FramedWrite::new(&mut buffer, SilkroadCodec));
+        let mut writer = SilkroadStreamWrite::new(
+            FramedWrite::new(&mut buffer, SilkroadCodec),
+            PacketRegistry::builder().register::<Empty>().build(),
+            SharedState::new(),
+        );
         writer
             .write_packet(Empty)
             .await
@@ -369,5 +597,79 @@ mod test {
         drop(writer);
         let content: &[u8] = &buffer;
         assert_eq!(&[0x00u8, 0x00, 0x42, 0x00, 0x00, 0x00], content);
+    }
+
+    #[tokio::test]
+    pub async fn test_context_received_sent() {
+        let mut buffer: Vec<u8> = Vec::new();
+        let state = SharedState::default();
+        let registry = PacketRegistry::builder()
+            .register::<Empty>()
+            .register::<Conditional>()
+            .build();
+        let mut writer = SilkroadStreamWrite::new(
+            FramedWrite::new(&mut buffer, SilkroadCodec),
+            registry.clone(),
+            state.clone(),
+        );
+
+        // First, write the Empty packet to set last_sent
+        writer
+            .write_packet(Empty)
+            .await
+            .expect("Should write Empty packet");
+
+        assert_eq!(
+            writer
+                .context()
+                .get::<LastSentPacket>()
+                .unwrap_or_default()
+                .0,
+            0x0042
+        );
+
+        let test_buffer: &[u8] = &[
+            // First one should end up with Conditional::First(0x42)
+            0x01, 0x00, 0x43, 0x00, 0x00, 0x00, 0x42,
+            // Second one should end up with Conditional::Second(0x42)
+            0x01, 0x00, 0x43, 0x00, 0x00, 0x00, 0x42,
+            // Third one should end up with Conditional::Third(0x42)
+            0x01, 0x00, 0x43, 0x00, 0x00, 0x00, 0x42,
+        ];
+        let mut reader = SilkroadStreamRead::new(
+            FramedRead::new(test_buffer, SilkroadCodec),
+            registry,
+            state.clone(),
+        );
+        let cond = reader.next_packet().await.expect("Should read Conditional");
+        assert!(matches!(
+            cond.into_packet::<Conditional>(),
+            Ok(Conditional::First(0x42))
+        ));
+
+        writer
+            .write_packet(Conditional::First(1))
+            .await
+            .expect("Should be able to send packet");
+        assert_eq!(
+            writer
+                .context()
+                .get::<LastSentPacket>()
+                .unwrap_or_default()
+                .0,
+            0x0043
+        );
+        let cond = reader.next_packet().await.expect("Should read Conditional");
+        assert!(matches!(
+            cond.into_packet::<Conditional>(),
+            Ok(Conditional::Second(0x42))
+        ));
+
+        state.state.set(CustomFlag(1));
+        let cond = reader.next_packet().await.expect("Should read Conditional");
+        assert!(matches!(
+            cond.into_packet::<Conditional>(),
+            Ok(Conditional::Third(0x42))
+        ));
     }
 }

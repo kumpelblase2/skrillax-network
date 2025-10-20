@@ -64,12 +64,14 @@ use thiserror::Error;
 #[cfg(feature = "derive")]
 pub use skrillax_packet_derive::Packet;
 #[cfg(feature = "serde")]
+pub use skrillax_serde::SerdeContext;
+#[cfg(feature = "serde")]
 use skrillax_serde::{ByteSize, Deserialize, SerializationError, Serialize};
 
 #[derive(Error, Debug)]
 pub enum PacketError {
     #[cfg(feature = "serde")]
-    #[error("An error occurred while trying to (de)serialize the packet")]
+    #[error("An error occurred while trying to (de)serialize the packet. {0:?}")]
     SerializationError(#[from] SerializationError),
     #[error(
         "An encrypted packet was either attempted to be sent or received, but no security has \
@@ -145,6 +147,16 @@ pub enum OutgoingPacket {
     Massive { opcode: u16, packets: Vec<Bytes> },
 }
 
+impl OutgoingPacket {
+    pub fn opcode(&self) -> u16 {
+        match self {
+            OutgoingPacket::Encrypted { opcode, .. } => *opcode,
+            OutgoingPacket::Simple { opcode, .. } => *opcode,
+            OutgoingPacket::Massive { opcode, .. } => *opcode,
+        }
+    }
+}
+
 /// Defines _something_ that can be turned into a packet, which then can be sent
 /// out.
 ///
@@ -156,13 +168,9 @@ pub enum OutgoingPacket {
 /// The analog is [TryFromPacket].
 pub trait AsPacket {
     /// Serializes this structure into a packet that can be sent over the wire.
-    fn as_packet(&self) -> OutgoingPacket;
-}
-
-impl<T: AsPacket> From<T> for OutgoingPacket {
-    fn from(value: T) -> Self {
-        value.as_packet()
-    }
+    /// A [SerdeContext] is provided to control stateful parsing of packets if
+    /// necessary for a request-response style of operation.
+    fn as_packet(&self, ctx: &SerdeContext) -> OutgoingPacket;
 }
 
 /// Defines _something_ that can be created from a packet, after it has been
@@ -181,7 +189,7 @@ pub trait TryFromPacket {
     /// for example, if we were inside a massive frame. Thus, we need to
     /// return the number of consumed bytes such that the remainder may be
     /// used to create more elements of `Self` if the caller wants to.
-    fn try_deserialize(data: &[u8]) -> Result<(usize, Self), PacketError>
+    fn try_deserialize(data: &[u8], ctx: &SerdeContext) -> Result<(usize, Self), PacketError>
     where
         Self: Sized;
 }
@@ -189,12 +197,12 @@ pub trait TryFromPacket {
 #[cfg(feature = "serde")]
 impl<T> TryFromPacket for T
 where
-    T: Packet + Deserialize + Send + Sized,
+    T: Packet + Deserialize,
 {
-    fn try_deserialize(data: &[u8]) -> Result<(usize, Self), PacketError> {
+    fn try_deserialize(data: &[u8], ctx: &SerdeContext) -> Result<(usize, Self), PacketError> {
         use bytes::Buf;
         let mut reader = data.reader();
-        let read = Self::read_from(&mut reader)?;
+        let read = Self::read_from(&mut reader, ctx)?;
         let consumed = data.len() - reader.into_inner().len();
         Ok((consumed, read))
     }
@@ -205,13 +213,13 @@ impl<T> AsPacket for [T]
 where
     T: Packet + Serialize + ByteSize,
 {
-    fn as_packet(&self) -> OutgoingPacket {
+    fn as_packet(&self, ctx: &SerdeContext) -> OutgoingPacket {
         use std::cmp::{max, min};
         assert!(T::MASSIVE, "Can only transform massive packets");
         let total_size = self.iter().map(|p| p.byte_size()).sum();
         let mut buffer = BytesMut::with_capacity(total_size);
         for p in self {
-            p.write_to(&mut buffer);
+            p.write_to(&mut buffer, ctx);
         }
 
         let mut data = buffer.freeze();
@@ -234,11 +242,11 @@ impl<T> AsPacket for T
 where
     T: Packet + Serialize + ByteSize,
 {
-    fn as_packet(&self) -> OutgoingPacket {
+    fn as_packet(&self, ctx: &SerdeContext) -> OutgoingPacket {
         use std::cmp::{max, min};
 
         let mut buffer = BytesMut::with_capacity(self.byte_size());
-        self.write_to(&mut buffer);
+        self.write_to(&mut buffer, ctx);
         if Self::MASSIVE {
             let mut data = buffer.freeze();
             let required_packets = max(data.len() / 0x7FFF, 1);
@@ -677,7 +685,7 @@ impl SecurityBytes {
         self.checksum.generate_byte(data)
     }
 
-    pub fn checksum_builder(&self) -> ChecksumBuilder {
+    pub fn checksum_builder(&self) -> ChecksumBuilder<'_> {
         self.checksum.builder()
     }
 }

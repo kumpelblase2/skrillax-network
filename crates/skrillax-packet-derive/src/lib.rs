@@ -1,6 +1,6 @@
 use darling::FromDeriveInput;
 use proc_macro::TokenStream;
-use proc_macro_error::{abort, proc_macro_error};
+use proc_macro_error2::{abort, proc_macro_error};
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput};
 
@@ -24,7 +24,7 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     let DeriveInput { ident, .. } = input;
 
     let opcode = args.opcode;
-    let name = format!("{}", ident);
+    let name = format!("{ident}");
     let massive = args.massive.unwrap_or(false);
     let encrypted = args.encrypted.unwrap_or(false);
 
