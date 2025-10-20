@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use skrillax_packet::Packet;
 use skrillax_serde::{ByteSize, Deserialize, Serialize};
-use skrillax_stream::handshake::StaticRegistryExt;
+use skrillax_stream::handshake::HandshakePacketRegistryExt;
 use skrillax_stream::registry::PacketRegistry;
 use skrillax_stream::{handshake::PassiveSecuritySetup, stream::SilkroadTcpExt};
 use std::net::ToSocketAddrs;
