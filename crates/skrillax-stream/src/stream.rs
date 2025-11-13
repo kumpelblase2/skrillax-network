@@ -112,7 +112,7 @@ impl SilkroadTcpExt for TcpStream {
     }
 }
 
-pub struct DynamicPacket(pub(crate) Box<dyn Any + Send>);
+pub struct DynamicPacket(Box<dyn Any + Send>, u16);
 
 impl Debug for DynamicPacket {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -121,6 +121,10 @@ impl Debug for DynamicPacket {
 }
 
 impl DynamicPacket {
+    pub fn new(opcode: u16, inner: Box<dyn Any + Send>) -> Self {
+        Self(inner, opcode)
+    }
+
     pub fn as_packet<T: 'static>(&self) -> Option<&T> {
         self.0.downcast_ref()
     }
@@ -128,18 +132,22 @@ impl DynamicPacket {
     pub fn into_packet<T: 'static>(self) -> Result<T, DynamicPacket> {
         match self.0.downcast::<T>() {
             Ok(b) => Ok(*b),
-            Err(b) => Err(DynamicPacket(b)),
+            Err(b) => Err(DynamicPacket(b, self.1)),
         }
     }
 
     pub fn packet_type(&self) -> TypeId {
         self.0.as_ref().type_id()
     }
+
+    pub fn opcode(&self) -> u16 {
+        self.1
+    }
 }
 
 impl<T: Packet + Send + 'static> From<T> for DynamicPacket {
     fn from(packet: T) -> Self {
-        Self(Box::new(packet))
+        Self(Box::new(packet), T::ID)
     }
 }
 
@@ -302,15 +310,14 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
         Ok(())
     }
 
-    pub async fn write_packet<S: Packet + Send + 'static>(
+    pub async fn write_packet<S: Into<DynamicPacket>>(
         &mut self,
         packet: S,
     ) -> Result<(), OutStreamError> {
         let context = self.state.as_context();
-        let packet = DynamicPacket(Box::new(packet));
+        let packet = packet.into();
         self.write_callbacks.call_for_packet(&packet, &context);
-        let opcode = S::ID;
-        let outgoing_packet = self.registry.encode(opcode, packet, &context)?;
+        let outgoing_packet = self.registry.encode(packet.opcode(), packet, &context)?;
         self.write_callbacks
             .call_for_frame(&outgoing_packet, &context);
         self.write(outgoing_packet).await

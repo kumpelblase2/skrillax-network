@@ -35,8 +35,10 @@ use std::collections::HashMap;
 pub struct PacketRegistry {
     encoders:
         HashMap<u16, fn(DynamicPacket, &SerdeContext) -> Result<OutgoingPacket, OutStreamError>>,
-    decoders:
-        HashMap<u16, fn(&[u8], &SerdeContext) -> Result<(usize, DynamicPacket), InStreamError>>,
+    decoders: HashMap<
+        u16,
+        fn(u16, &[u8], &SerdeContext) -> Result<(usize, DynamicPacket), InStreamError>,
+    >,
 }
 
 impl PacketRegistry {
@@ -59,7 +61,7 @@ impl PacketRegistry {
         context: &SerdeContext,
     ) -> Result<(usize, DynamicPacket), InStreamError> {
         if let Some(decoder) = self.decoders.get(&opcode) {
-            decoder(data, context)
+            decoder(opcode, data, context)
         } else {
             Err(InStreamError::UnmatchedOpcode(opcode))
         }
@@ -96,16 +98,19 @@ impl PacketRegistry {
 pub struct PacketRegistryBuilder {
     encoders:
         HashMap<u16, fn(DynamicPacket, &SerdeContext) -> Result<OutgoingPacket, OutStreamError>>,
-    decoders:
-        HashMap<u16, fn(&[u8], &SerdeContext) -> Result<(usize, DynamicPacket), InStreamError>>,
+    decoders: HashMap<
+        u16,
+        fn(u16, &[u8], &SerdeContext) -> Result<(usize, DynamicPacket), InStreamError>,
+    >,
 }
 
 fn decode_fn<T: TryFromPacket + Send + 'static>(
+    opcode: u16,
     bytes: &[u8],
     context: &SerdeContext,
 ) -> Result<(usize, DynamicPacket), InStreamError> {
     let (consumed, read) = T::try_deserialize(bytes, context)?;
-    Ok((consumed, DynamicPacket(Box::new(read))))
+    Ok((consumed, DynamicPacket::new(opcode, Box::new(read))))
 }
 
 fn encode_fn<T: AsPacket + Send + 'static>(
