@@ -171,7 +171,7 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
         self.security_bytes.as_deref()
     }
 
-    pub fn security_context(&self) -> SecurityContext {
+    pub fn security_context(&self) -> SecurityContext<'_> {
         SecurityContext::new(self.encryption(), self.security_bytes())
     }
 
@@ -272,7 +272,7 @@ where
     /// [SilkroadStreamRead::security_bytes] data inside. Essentially, this
     /// is a convenience wrapper around those functions to provide
     /// a single struct that can be passed around.
-    pub fn security_context(&self) -> SecurityContext {
+    pub fn security_context(&self) -> SecurityContext<'_> {
         SecurityContext::new(self.encryption(), self.security_bytes())
     }
 

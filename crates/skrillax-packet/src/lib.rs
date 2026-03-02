@@ -677,7 +677,7 @@ impl SecurityBytes {
         self.checksum.generate_byte(data)
     }
 
-    pub fn checksum_builder(&self) -> ChecksumBuilder {
+    pub fn checksum_builder(&self) -> ChecksumBuilder<'_> {
         self.checksum.builder()
     }
 }

@@ -116,7 +116,7 @@ impl SilkroadEncryption {
     /// If the input doesn't match the required block length it will return
     /// [SilkroadSecurityError::InvalidBlockLength].
     pub fn decrypt_mut(&self, data: &mut [u8]) -> Result<(), SilkroadSecurityError> {
-        if data.len() % BLOWFISH_BLOCK_SIZE != 0 {
+        if !data.len().is_multiple_of(BLOWFISH_BLOCK_SIZE) {
             return Err(SilkroadSecurityError::InvalidBlockLength(data.len()));
         }
 
@@ -154,7 +154,7 @@ impl SilkroadEncryption {
     /// If the data is not block-aligned, will result in
     /// [SilkroadSecurityError::InvalidBlockLength]
     pub fn encrypt_mut(&self, data: &mut [u8]) -> Result<(), SilkroadSecurityError> {
-        if data.len() % BLOCK_SIZE != 0 {
+        if !data.len().is_multiple_of(BLOCK_SIZE) {
             return Err(SilkroadSecurityError::InvalidBlockLength(data.len()));
         }
 

@@ -255,7 +255,7 @@ pub(crate) enum UsedType<'a> {
     Tuple(Vec<&'a Type>),
 }
 
-pub(crate) fn get_type_of(ty: &Type) -> UsedType {
+pub(crate) fn get_type_of(ty: &Type) -> UsedType<'_> {
     match ty {
         Type::Array(arr) => UsedType::Array(&arr.len),
         Type::Reference(_) => abort!(ty, "References are not supported for (de)serialization."),
