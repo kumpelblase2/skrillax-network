@@ -9,3 +9,6 @@ test:
 
 fmt:
     cargo +nightly fmt
+
+bench:
+    cargo bench --bench serde_bench --all-features

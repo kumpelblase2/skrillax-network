@@ -16,6 +16,7 @@ independent = true
 default = ["chrono"]
 derive = ["dep:skrillax-serde-derive"]
 chrono = ["dep:chrono"]
+_gen = ["dep:rand"]
 
 [dependencies]
 bytes.workspace = true
@@ -23,3 +24,19 @@ byteorder.workspace = true
 skrillax-serde-derive = { path = "../skrillax-serde-derive", version = "0.2.0", optional = true }
 chrono = { version = "^0.4.38", optional = true }
 thiserror.workspace = true
+rand = { version = "0.8", optional = true }
+
+[dev-dependencies]
+bytes = "1.10"
+criterion = "0.5"
+rand = "0.8"
+
+[[bench]]
+name = "serde_bench"
+harness = false
+required-features = ["derive"]
+
+[[bin]]
+name = "generate_bench_data"
+path = "dev/generate_data.rs"
+required-features = ["derive", "_gen"]
