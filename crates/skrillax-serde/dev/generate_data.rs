@@ -90,6 +90,7 @@ fn main() {
     }
 
     let mut file = File::create(data_path).expect("failed to create data file");
-    file.write_all(&buffer).expect("failed to write data to file");
+    file.write_all(&buffer)
+        .expect("failed to write data to file");
     println!("Generated benchmark data to {:?}", data_path);
 }

@@ -38,9 +38,13 @@ fn bench_deserialization(c: &mut Criterion) {
     let data_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/data.bin");
     let items_count = 100;
 
-    let mut file = File::open(&data_path).expect("failed to open data file. Please run `cargo run --bin generate_bench_data --features derive` first.");
+    let mut file = File::open(&data_path).expect(
+        "failed to open data file. Please run `cargo run --bin generate_bench_data --features \
+         derive` first.",
+    );
     let mut encoded_data = Vec::new();
-    file.read_to_end(&mut encoded_data).expect("failed to read data file");
+    file.read_to_end(&mut encoded_data)
+        .expect("failed to read data file");
 
     let mut cursor = std::io::Cursor::new(&encoded_data);
     let mut roots = Vec::with_capacity(items_count);
