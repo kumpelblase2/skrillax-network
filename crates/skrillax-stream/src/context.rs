@@ -1,4 +1,3 @@
-#![allow(unused)] // these are only used in macros so they are 'unused'
 use skrillax_serde::SerdeContext;
 
 #[derive(Copy, Clone, Default)]

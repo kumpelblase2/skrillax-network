@@ -209,7 +209,7 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: SilkroadArgs) -> Tok
                     }
                 });
 
-                let variant_string = format!("{}", ident);
+                let variant_string = format!("{ident}");
                 let size = args.size.unwrap_or(1);
                 let reader = match size {
                     1 => quote_spanned!(ident.span() => u8::read_from(reader, ctx)?),
@@ -314,7 +314,7 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                             "Missing `calculate` attribute for collection of size `calculated`."
                         );
                     };
-                    let calculation = syn::parse_str::<Expr>(&calculation).unwrap();
+                    let calculation = syn::parse_str::<Expr>(calculation).unwrap();
 
                     quote_spanned! { field.span() =>
                         let skrillax_serde_size = #calculation;

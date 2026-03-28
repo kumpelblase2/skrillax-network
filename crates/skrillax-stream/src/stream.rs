@@ -245,8 +245,8 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
     }
 
     pub async fn write_packet<S: AsPacket>(&mut self, packet: S) -> Result<(), OutStreamError> {
-        let mut context = self.state.as_context();
-        let outgoing_packet = packet.as_packet(&mut context);
+        let context = self.state.as_context();
+        let outgoing_packet = packet.as_packet(&context);
         self.write(outgoing_packet).await
     }
 
