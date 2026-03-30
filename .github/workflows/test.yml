@@ -19,5 +19,6 @@ jobs:
       - name: cache cargo
         uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@just
+      - uses: taiki-e/install-action@nextest
       - name: test
         run: just test
