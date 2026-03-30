@@ -13,7 +13,7 @@ jobs:
       matrix:
         os: [ macos-latest, windows-latest, ubuntu-latest ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: install toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: cache cargo
