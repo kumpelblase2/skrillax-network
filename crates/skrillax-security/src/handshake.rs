@@ -33,10 +33,10 @@
 //! [ActiveHandshake], or [PassiveHandshake] if you're assumed to be the active
 //! party or passive party respectively.
 
-use crate::{blowfish_from_int, BlowfishBlock, SilkroadEncryption, SilkroadSecurityError};
+use crate::{BlowfishBlock, SilkroadEncryption, SilkroadSecurityError, blowfish_from_int};
 use bitflags::bitflags;
-use blowfish::cipher::{BlockDecrypt, BlockEncrypt};
 use blowfish::BlowfishLE;
+use blowfish::cipher::{BlockDecrypt, BlockEncrypt};
 use byteorder::{ByteOrder, LittleEndian};
 use rand::random;
 

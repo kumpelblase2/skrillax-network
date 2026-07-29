@@ -1,7 +1,7 @@
-use crate::{get_type_of, get_variant_value, FieldArgs, SilkroadArgs, UsedType};
+use crate::{FieldArgs, SilkroadArgs, UsedType, get_type_of, get_variant_value};
 use darling::{FromAttributes, ToTokens};
-use proc_macro2::{Ident, TokenStream};
 use proc_macro_error2::abort;
+use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{Data, Expr, Field, Fields, Type};
@@ -252,8 +252,9 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
         };
     }
 
-    if !matches!(ty, UsedType::Collection(_)) && args.calculate.is_some() {
-        let calculate = args.calculate.unwrap();
+    if !matches!(ty, UsedType::Collection(_))
+        && let Some(calculate) = args.calculate
+    {
         return quote_spanned! { field.span() =>
             let #ident = #calculate;
         };

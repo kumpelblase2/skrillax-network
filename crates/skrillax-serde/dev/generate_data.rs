@@ -41,15 +41,15 @@ fn generate_random_root() -> RootStruct {
 
     for _ in 0..items_count {
         let sub_struct = SubStruct {
-            id: rng.gen(),
+            id: rng.r#gen(),
             name: (0..rng.gen_range(5..20))
                 .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
                 .collect(),
-            data: (0..rng.gen_range(10..100)).map(|_| rng.gen()).collect(),
+            data: (0..rng.gen_range(10..100)).map(|_| rng.r#gen()).collect(),
         };
 
         let sub_enum = if rng.gen_bool(0.5) {
-            SubEnum::VariantA(rng.gen())
+            SubEnum::VariantA(rng.r#gen())
         } else {
             SubEnum::VariantB(
                 (0..rng.gen_range(5..20))
@@ -59,7 +59,7 @@ fn generate_random_root() -> RootStruct {
         };
 
         let flags_count = rng.gen_range(1..10);
-        let flags = (0..flags_count).map(|_| rng.gen()).collect();
+        let flags = (0..flags_count).map(|_| rng.r#gen()).collect();
 
         items.push(NestedStruct {
             inner_struct: sub_struct,
@@ -69,7 +69,7 @@ fn generate_random_root() -> RootStruct {
     }
 
     RootStruct {
-        header: rng.gen(),
+        header: rng.r#gen(),
         items,
         footer: "END_OF_PACKET".to_string(),
     }

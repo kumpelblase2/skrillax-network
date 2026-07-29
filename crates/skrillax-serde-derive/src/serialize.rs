@@ -1,7 +1,7 @@
-use crate::{get_type_of, get_variant_value, FieldArgs, SilkroadArgs, UsedType, DEFAULT_LIST_TYPE};
+use crate::{DEFAULT_LIST_TYPE, FieldArgs, SilkroadArgs, UsedType, get_type_of, get_variant_value};
 use darling::FromAttributes;
-use proc_macro2::{Ident, TokenStream};
 use proc_macro_error2::abort;
+use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{Data, Field, Fields, Index, Variant};

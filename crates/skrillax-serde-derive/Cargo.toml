@@ -1,12 +1,12 @@
 [package]
 name = "skrillax-serde-derive"
 version = "0.3.0"
-edition = "2021"
 authors = ["kumpelblase2"]
 description = "Derive macro to automatically implement seralization/deserialization for stuctures."
 license = "MIT"
 repository = "https://git.eternalwings.de/tim/skrillax-network"
 keywords = ["silkroad", "serde"]
+edition.workspace = true
 
 [package.metadata.workspaces]
 independent = true

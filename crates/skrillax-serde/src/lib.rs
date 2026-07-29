@@ -152,7 +152,7 @@ pub trait Deserialize {
     ) -> Result<Self, SerializationError>
     where
         Self: Sized; // Technically, we don't care about being `Sized`, but unfortunately, Result
-                     // does.
+    // does.
 }
 
 /// An item having a [ByteSize] implementation specifies it has a known

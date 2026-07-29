@@ -1,5 +1,5 @@
 use bytes::BytesMut;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use skrillax_serde::{ByteSize, Deserialize, SerdeContext, Serialize};
 use std::fs::File;
 use std::io::Read;
@@ -70,9 +70,11 @@ fn bench_deserialization(c: &mut Criterion) {
         let mut buffer = BytesMut::with_capacity(total_size);
         let ctx = SerdeContext::default();
         b.iter(|| {
+            buffer.clear();
             for root in &roots {
-                black_box(root.write_to_end(&mut buffer, &ctx));
+                root.write_to_end(&mut buffer, black_box(&ctx));
             }
+            black_box(&buffer);
         })
     });
 }

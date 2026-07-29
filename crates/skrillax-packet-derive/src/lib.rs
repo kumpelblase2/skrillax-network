@@ -2,7 +2,7 @@ use darling::FromDeriveInput;
 use proc_macro::TokenStream;
 use proc_macro_error2::{abort, proc_macro_error};
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput};
+use syn::{DeriveInput, parse_macro_input};
 
 #[derive(FromDeriveInput)]
 #[darling(attributes(packet))]

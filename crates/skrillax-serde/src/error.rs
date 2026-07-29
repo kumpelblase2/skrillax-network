@@ -1,5 +1,5 @@
 use std::io;
-use std::string::{FromUtf16Error, FromUtf8Error};
+use std::string::{FromUtf8Error, FromUtf16Error};
 use thiserror::Error;
 
 /// Any kind of problem that may occur when trying to deserialize data.

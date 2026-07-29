@@ -1,12 +1,12 @@
 [package]
 name = "skrillax-packet-derive"
 version = "0.2.0"
-edition = "2021"
 authors = ["kumpelblase2"]
 description = "Derive implementation for skrillax-packet."
 license = "MIT"
 repository = "https://git.eternalwings.de/tim/skrillax-network"
 keywords = ["silkroad", "packets"]
+edition.workspace = true
 
 [package.metadata.workspaces]
 independent = true

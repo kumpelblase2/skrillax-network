@@ -16,8 +16,8 @@ use std::io;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
 /// Errors for possible problems writing packets.
@@ -180,10 +180,13 @@ impl SharedState {
     }
 }
 
+type BeforeWriteFrameCallback = Box<dyn Fn(&OutgoingPacket, &SerdeContext) + Send>;
+type BeforeWritePacketCallback = Box<dyn Fn(&DynamicPacket, &SerdeContext) + Send>;
+
 #[derive(Default)]
 struct WriteCallbacks {
-    before_write_frame: Vec<Box<dyn Fn(&OutgoingPacket, &SerdeContext) + Send>>,
-    before_write_packet: HashMap<TypeId, Box<dyn Fn(&DynamicPacket, &SerdeContext) + Send>>,
+    before_write_frame: Vec<BeforeWriteFrameCallback>,
+    before_write_packet: HashMap<TypeId, BeforeWritePacketCallback>,
 }
 
 impl WriteCallbacks {
@@ -328,10 +331,13 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
     }
 }
 
+type AfterReadFrameCallback = Box<dyn Fn(&IncomingPacket, &SerdeContext) + Send + 'static>;
+type AfterReadPacketCallback = Box<dyn Fn(&DynamicPacket, &SerdeContext) + Send + 'static>;
+
 #[derive(Default)]
 struct ReadCallbacks {
-    after_read_frame: Vec<Box<dyn Fn(&IncomingPacket, &SerdeContext) + Send + 'static>>,
-    after_read_packet: HashMap<TypeId, Box<dyn Fn(&DynamicPacket, &SerdeContext) + Send + 'static>>,
+    after_read_frame: Vec<AfterReadFrameCallback>,
+    after_read_packet: HashMap<TypeId, AfterReadPacketCallback>,
 }
 
 impl ReadCallbacks {

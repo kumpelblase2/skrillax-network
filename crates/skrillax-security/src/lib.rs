@@ -31,8 +31,8 @@ pub use crate::count::*;
 pub use crate::handshake::ActiveHandshake;
 pub use crate::handshake::PassiveHandshake;
 pub use crate::handshake::SecurityFeature;
-use blowfish::cipher::{Block, BlockDecrypt, BlockEncrypt, KeyInit};
 use blowfish::BlowfishLE;
+use blowfish::cipher::{Block, BlockDecrypt, BlockEncrypt, KeyInit};
 
 use bytes::{BufMut, Bytes};
 use thiserror::Error;

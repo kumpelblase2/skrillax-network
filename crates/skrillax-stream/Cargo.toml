@@ -1,13 +1,13 @@
 [package]
 name = "skrillax-stream"
 version = "0.3.0"
-edition = "2021"
 authors = ["kumpelblase2"]
 description = "Combines skrillax-network crates to work nicely on top of a tokio tcp stream"
 license = "MIT"
 repository = "https://git.eternalwings.de/tim/skrillax-network"
 categories = ["asynchronous", "network-programming"]
 keywords = ["silkroad", "tokio", "tcp", "stream"]
+edition.workspace = true
 
 [package.metadata.workspaces]
 independent = true

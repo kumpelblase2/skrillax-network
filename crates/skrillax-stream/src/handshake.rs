@@ -274,7 +274,7 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> ActiveSecuritySetup<'_, T, S> 
             .await?;
 
         let response = reader.next_packet().await?;
-        if !response.into_packet::<HandshakeAccepted>().is_ok() {
+        if response.into_packet::<HandshakeAccepted>().is_err() {
             return Err(HandshakeError::FinalizationNotAccepted);
         }
 

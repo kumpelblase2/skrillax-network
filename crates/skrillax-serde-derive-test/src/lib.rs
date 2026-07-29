@@ -178,7 +178,7 @@ enum TaggedEnum {
         #[silkroad(tag)]
         value: u16,
     },
-    #[silkroad(when = "tag >= 100 && tag <= 300")]
+    #[silkroad(when = "(100..=300).contains(&tag)")]
     B {
         #[silkroad(tag)]
         value: u16,
@@ -234,7 +234,7 @@ pub fn test_tagged_enum_serialization() {
 enum TaggedTupleEnum {
     #[silkroad(when = "tag < 100")]
     A(#[silkroad(tag)] u16),
-    #[silkroad(when = "tag >= 100 && tag <= 300")]
+    #[silkroad(when = "(100..=300).contains(&tag)")]
     B(#[silkroad(tag)] u16),
     #[silkroad(when = "tag >= 301")]
     C(#[silkroad(tag)] u16),

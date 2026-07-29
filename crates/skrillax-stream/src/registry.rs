@@ -1,9 +1,10 @@
-//!
-
 use crate::stream::{DynamicPacket, InStreamError, OutStreamError};
 use skrillax_packet::{AsPacket, OutgoingPacket, Packet, TryFromPacket};
 use skrillax_serde::SerdeContext;
 use std::collections::HashMap;
+
+type EncoderFn = fn(DynamicPacket, &SerdeContext) -> Result<OutgoingPacket, OutStreamError>;
+type DecoderFn = fn(u16, &[u8], &SerdeContext) -> Result<(usize, DynamicPacket), InStreamError>;
 
 /// A registry for packets.
 ///
@@ -33,12 +34,8 @@ use std::collections::HashMap;
 /// ```
 #[derive(Clone)]
 pub struct PacketRegistry {
-    encoders:
-        HashMap<u16, fn(DynamicPacket, &SerdeContext) -> Result<OutgoingPacket, OutStreamError>>,
-    decoders: HashMap<
-        u16,
-        fn(u16, &[u8], &SerdeContext) -> Result<(usize, DynamicPacket), InStreamError>,
-    >,
+    encoders: HashMap<u16, EncoderFn>,
+    decoders: HashMap<u16, DecoderFn>,
 }
 
 impl PacketRegistry {
@@ -96,12 +93,8 @@ impl PacketRegistry {
 /// encoder/decoder per opcode, registering an opcode twice is considered an
 /// error.
 pub struct PacketRegistryBuilder {
-    encoders:
-        HashMap<u16, fn(DynamicPacket, &SerdeContext) -> Result<OutgoingPacket, OutStreamError>>,
-    decoders: HashMap<
-        u16,
-        fn(u16, &[u8], &SerdeContext) -> Result<(usize, DynamicPacket), InStreamError>,
-    >,
+    encoders: HashMap<u16, EncoderFn>,
+    decoders: HashMap<u16, DecoderFn>,
 }
 
 fn decode_fn<T: TryFromPacket + Send + 'static>(

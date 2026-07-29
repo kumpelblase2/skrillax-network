@@ -1,13 +1,13 @@
 [package]
 name = "skrillax-packet"
 version = "0.4.0"
-edition = "2021"
 authors = ["kumpelblase2"]
 description = "Packet definition to serialize and deserialize to and from frames for Silkroad Online packets."
 license = "MIT"
 repository = "https://git.eternalwings.de/tim/skrillax-network"
 categories = ["network-programming", "encoding"]
 keywords = ["silkroad", "packets"]
+edition.workspace = true
 
 [package.metadata.workspaces]
 independent = true

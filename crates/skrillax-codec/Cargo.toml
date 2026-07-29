@@ -1,13 +1,13 @@
 [package]
 name = "skrillax-codec"
 version = "0.1.1"
-edition = "2021"
 authors = ["kumpelblase2"]
 description = "A framing codec for Silkroad Online network packets."
 license = "MIT"
 repository = "https://git.eternalwings.de/tim/skrillax-network"
 categories = ["encoding", "network-programming", "parser-implementations"]
 keywords = ["silkroad", "codec"]
+edition.workspace = true
 
 [package.metadata.workspaces]
 independent = true
