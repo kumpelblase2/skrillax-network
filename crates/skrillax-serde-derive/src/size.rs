@@ -1,133 +1,141 @@
 use crate::{FieldArgs, SilkroadArgs, UsedType, get_type_of};
 use darling::FromAttributes;
-use proc_macro_error2::abort;
 use proc_macro2::{Ident, TokenStream};
+use proc_macro2_diagnostics::{Diagnostic, SpanDiagnosticExt};
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{Data, Field, Fields, Index, Type};
 
-pub(crate) fn size(ident: &Ident, data: &Data, args: SilkroadArgs) -> TokenStream {
-    match *data {
-        Data::Struct(ref struct_data) => match &struct_data.fields {
+pub(crate) fn size(
+    ident: &Ident,
+    data: &Data,
+    args: SilkroadArgs,
+) -> Result<TokenStream, Diagnostic> {
+    match data {
+        Data::Struct(struct_data) => match &struct_data.fields {
             Fields::Named(named) => {
                 if named.named.is_empty() {
-                    return quote!(0);
+                    return Ok(quote!(0));
                 }
 
-                let content = named.named.iter().map(|field| {
-                    let ident = field.ident.as_ref().unwrap();
-                    generate_size_for(field, quote!(self.#ident))
-                });
-                quote_spanned! { ident.span() =>
+                let content = named
+                    .named
+                    .iter()
+                    .map(|field| {
+                        let ident = field.ident.as_ref().unwrap();
+                        generate_size_for(field, quote!(self.#ident))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(quote_spanned! { ident.span() =>
                     #(#content)+*
-                }
+                })
             },
             Fields::Unnamed(unnamed) => {
-                let content = unnamed.unnamed.iter().enumerate().map(|(i, field)| {
-                    let ident = Index::from(i);
-                    generate_size_for(field, quote!(self.#ident))
-                });
-                quote_spanned! { ident.span() =>
+                let content = unnamed
+                    .unnamed
+                    .iter()
+                    .enumerate()
+                    .map(|(i, field)| {
+                        let ident = Index::from(i);
+                        generate_size_for(field, quote!(self.#ident))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(quote_spanned! { ident.span() =>
                     #(#content)+*
-                }
+                })
             },
-            Fields::Unit => {
-                quote!(0)
-            },
+            Fields::Unit => Ok(quote!(0)),
         },
-        Data::Enum(ref enum_data) => {
-            let arms = enum_data.variants.iter().map(|variant| {
-                let name = &variant.ident;
-                match &variant.fields {
-                    Fields::Named(named) => {
-                        let idents = named
-                            .named
-                            .iter()
-                            .map(|field| {
-                                field
-                                    .ident
-                                    .as_ref()
-                                    .expect("Field of named struct should have a name")
+        Data::Enum(enum_data) => {
+            let arms = enum_data
+                .variants
+                .iter()
+                .map(|variant| -> Result<TokenStream, Diagnostic> {
+                    let name = &variant.ident;
+                    match &variant.fields {
+                        Fields::Named(named) => {
+                            let idents = named
+                                .named
+                                .iter()
+                                .map(|field| {
+                                    field
+                                        .ident
+                                        .as_ref()
+                                        .expect("Field of named struct should have a name")
+                                })
+                                .collect::<Vec<&Ident>>();
+                            let content = named
+                                .named
+                                .iter()
+                                .zip(&idents)
+                                .map(|(field, ident)| generate_size_for(field, quote!(#ident)))
+                                .collect::<Result<Vec<_>, _>>()?;
+
+                            Ok(quote_spanned! { name.span() =>
+                                #ident::#name { #(#idents),* } => {
+                                    #(#content)+*
+                                }
                             })
-                            .collect::<Vec<&Ident>>();
-                        let content = named
-                            .named
-                            .iter()
-                            .zip(&idents)
-                            .map(|(field, ident)| generate_size_for(field, quote!(#ident)));
+                        },
+                        Fields::Unnamed(unnamed) => {
+                            let idents = (0..unnamed.unnamed.len())
+                                .map(|i| format_ident!("t{}", i))
+                                .collect::<Vec<Ident>>();
+                            let content = unnamed
+                                .unnamed
+                                .iter()
+                                .zip(&idents)
+                                .map(|(field, ident)| generate_size_for(field, quote!(#ident)))
+                                .collect::<Result<Vec<_>, _>>()?;
 
-                        quote_spanned! { name.span() =>
-                            #ident::#name { #(#idents),* } => {
-                                #(#content)+*
-                            }
-                        }
-                    },
-                    Fields::Unnamed(unnamed) => {
-                        let idents = (0..unnamed.unnamed.len())
-                            .map(|i| format_ident!("t{}", i))
-                            .collect::<Vec<Ident>>();
-                        let content = unnamed
-                            .unnamed
-                            .iter()
-                            .zip(&idents)
-                            .map(|(field, ident)| generate_size_for(field, quote!(#ident)));
-
-                        quote_spanned! { name.span() =>
-                            #ident::#name(#(#idents),*) => {
-                                #(#content)+*
-                            }
-                        }
-                    },
-                    Fields::Unit => {
-                        quote_spanned! { name.span() =>
+                            Ok(quote_spanned! { name.span() =>
+                                #ident::#name(#(#idents),*) => {
+                                    #(#content)+*
+                                }
+                            })
+                        },
+                        Fields::Unit => Ok(quote_spanned! { name.span() =>
                             #ident::#name => 0
-                        }
-                    },
-                }
-            });
+                        }),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let size = args.size.unwrap_or(1);
-            quote_spanned! { ident.span() =>
+            Ok(quote_spanned! { ident.span() =>
                 #size + match &self {
                     #(#arms),*
                 }
-            }
+            })
         },
-        Data::Union(_) => {
-            quote!(0)
-        },
+        Data::Union(_) => Ok(quote!(0)),
     }
 }
 
-fn generate_size_for(field: &Field, ident: TokenStream) -> TokenStream {
-    let ty = get_type_of(&field.ty);
-    let Ok(field_args) = FieldArgs::from_attributes(&field.attrs) else {
-        abort!(field, "Could not parse field attributes.");
-    };
+fn generate_size_for(field: &Field, ident: TokenStream) -> Result<TokenStream, Diagnostic> {
+    let ty = get_type_of(&field.ty)?;
+    let field_args = FieldArgs::from_attributes(&field.attrs)
+        .map_err(|_| field.span().error("Could not parse field attributes."))?;
     match ty {
-        UsedType::Primitive => {
-            quote_spanned!(field.span() => #ident.byte_size())
-        },
+        UsedType::Primitive => Ok(quote_spanned!(field.span() => #ident.byte_size())),
         UsedType::String => {
             let size = field_args.size.unwrap_or(1);
-            quote_spanned! { field.span() =>
+            Ok(quote_spanned! { field.span() =>
                 2 + #ident.len() * #size
-            }
+            })
         },
-        UsedType::Array(_) => {
-            quote_spanned!(field.span() => #ident.len())
-        },
+        UsedType::Array(_) => Ok(quote_spanned!(field.span() => #ident.len())),
         UsedType::Collection(inner) => {
-            let inner_ty = get_type_of(inner);
-            let inner_ts = generate_size_for_inner(inner, &inner_ty, quote!(elem));
+            let inner_ty = get_type_of(inner)?;
+            let inner_ts = generate_size_for_inner(inner, &inner_ty, quote!(elem))?;
             let length_type = field_args.list_type.unwrap_or_else(|| "length".to_string());
             if length_type == "break" || length_type == "has-more" {
-                quote_spanned! { field.span() =>
+                Ok(quote_spanned! { field.span() =>
                     1 + #ident.iter().map(|elem| #inner_ts + 1).sum::<usize>()
-                }
+                })
             } else {
-                quote_spanned! { field.span() =>
+                Ok(quote_spanned! { field.span() =>
                     1 + #ident.iter().map(|elem| #inner_ts).sum::<usize>()
-                }
+                })
             }
         },
         UsedType::Option(inner) => {
@@ -139,11 +147,11 @@ fn generate_size_for(field: &Field, ident: TokenStream) -> TokenStream {
             } else {
                 1
             };
-            let inner_ty = get_type_of(inner);
-            let inner_ts = generate_size_for_inner(inner, &inner_ty, quote!(elem));
-            quote_spanned! { field.span() =>
+            let inner_ty = get_type_of(inner)?;
+            let inner_ts = generate_size_for_inner(inner, &inner_ty, quote!(elem))?;
+            Ok(quote_spanned! { field.span() =>
                 #size + #ident.as_ref().map(|elem| #inner_ts).unwrap_or(0)
-            }
+            })
         },
         UsedType::Tuple(inner) => {
             let content = (0..inner.len()).map(Index::from).map(|index| {
@@ -151,35 +159,33 @@ fn generate_size_for(field: &Field, ident: TokenStream) -> TokenStream {
                     #ident.#index.byte_size()
                 }
             });
-            quote_spanned! { field.span() =>
+            Ok(quote_spanned! { field.span() =>
                 #(#content)+*
-            }
+            })
         },
     }
 }
 
-fn generate_size_for_inner(ty: &Type, used_type: &UsedType, ident: TokenStream) -> TokenStream {
+fn generate_size_for_inner(
+    ty: &Type,
+    used_type: &UsedType,
+    ident: TokenStream,
+) -> Result<TokenStream, Diagnostic> {
     match used_type {
-        UsedType::Primitive => {
-            quote!(#ident.byte_size())
-        },
-        UsedType::String => {
-            quote!(2 + #ident.len())
-        },
-        UsedType::Array(_) => {
-            quote!(#ident.len())
-        },
-        UsedType::Collection(_) => {
-            abort!(ty, "Cannot nest vectors. Create a wrapper struct instead.");
-        },
-        UsedType::Option(_) => {
-            abort!(ty, "Cannot nest options. Create a wrapper struct instead.")
-        },
+        UsedType::Primitive => Ok(quote!(#ident.byte_size())),
+        UsedType::String => Ok(quote!(2 + #ident.len())),
+        UsedType::Array(_) => Ok(quote!(#ident.len())),
+        UsedType::Collection(_) => Err(ty
+            .span()
+            .error("Cannot nest vectors. Create a wrapper struct instead.")),
+        UsedType::Option(_) => Err(ty
+            .span()
+            .error("Cannot nest options. Create a wrapper struct instead.")),
         UsedType::Tuple(inner) => {
             let content = (0..inner.len())
                 .map(Index::from)
                 .map(|index| quote!(#ident.#index.byte_size()));
-            quote!(#(#content)+*)
+            Ok(quote!(#(#content)+*))
         },
     }
 }
