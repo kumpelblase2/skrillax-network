@@ -11,14 +11,14 @@ error[E0599]: no method named `write_to` found for struct `Unrelated` in the cur
   = note: the following trait defines an item `write_to`, perhaps you need to implement it:
           candidate #1: `Serialize`
 
-error[E0599]: no function or associated item named `read_from` found for struct `Unrelated` in the current scope
+error[E0599]: no associated function or constant named `read_from` found for struct `Unrelated` in the current scope
  --> tests/ui/unsupported_type.rs:9:5
   |
 4 | struct Unrelated;
-  | ---------------- function or associated item `read_from` not found for this struct
+  | ---------------- associated function or constant `read_from` not found for this struct
 ...
 9 |     unrelated: Unrelated,
-  |     ^^^^^^^^^ function or associated item not found in `Unrelated`
+  |     ^^^^^^^^^ associated function or constant not found in `Unrelated`
   |
   = help: items from traits can only be used if the trait is implemented and in scope
   = note: the following trait defines an item `read_from`, perhaps you need to implement it:
