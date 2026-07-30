@@ -155,6 +155,30 @@ struct HandshakeChallenge {
 #[packet(opcode = 0x9000)]
 struct HandshakeAccepted;
 
+fn initial_handshake_flag(encryption: bool, checks: bool) -> HandshakeContent {
+    match (encryption, checks) {
+        (false, false) => HandshakeContent::NONE,
+        (false, true) => HandshakeContent::SETUP_CHECKS,
+        (true, false) => HandshakeContent::INIT_BLOWFISH | HandshakeContent::START_HANDSHAKE,
+        (true, true) => {
+            HandshakeContent::INIT_BLOWFISH
+                | HandshakeContent::SETUP_CHECKS
+                | HandshakeContent::START_HANDSHAKE
+        },
+    }
+}
+
+// The stream API exposes encryption as one feature, so initial Blowfish setup
+// and the challenge exchange are intentionally supported only as a pair.
+fn initial_handshake_features(flag: HandshakeContent) -> Result<(bool, bool), HandshakeError> {
+    for (encryption, checks) in [(false, false), (false, true), (true, false), (true, true)] {
+        if flag == initial_handshake_flag(encryption, checks) {
+            return Ok((encryption, checks));
+        }
+    }
+    Err(HandshakeError::InvalidContentFlag)
+}
+
 /// Active part of a Silkroad Online connection handshake.
 ///
 /// The active part in a handshake thats the initialization process and will
@@ -224,9 +248,7 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> ActiveSecuritySetup<'_, T, S> 
             reader.enable_security_checks(security_bytes);
         }
 
-        let mut flag = HandshakeContent::START_HANDSHAKE;
         let (blowfish_seed, encryption) = if let Some(encryption) = &init.encryption_seed {
-            flag |= HandshakeContent::INIT_BLOWFISH;
             (
                 Some(encryption.seed),
                 Some(HandshakeInitialization {
@@ -241,37 +263,37 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> ActiveSecuritySetup<'_, T, S> 
         };
 
         let (crc, count) = if let Some(checks) = &init.checks {
-            flag |= HandshakeContent::SETUP_CHECKS;
             (Some(checks.crc_seed), Some(checks.count_seed))
         } else {
             (None, None)
         };
 
-        let init_packet = SecurityCapabilityCheck {
-            flag: HandshakeContent::INIT_BLOWFISH
-                | HandshakeContent::SETUP_CHECKS
-                | HandshakeContent::START_HANDSHAKE,
-            blowfish_seed,
-            seed_count: count,
-            seed_crc: crc,
-            handshake_init: encryption,
-            ..Default::default()
-        };
-        writer.write_packet(init_packet).await?;
-
-        let response = reader.next_packet().await?;
-        let Ok(challenge) = response.into_packet::<HandshakeChallenge>() else {
-            return Err(HandshakeError::NoChallengeReceived);
-        };
-
-        let challenge = setup.start_challenge(challenge.b, challenge.key)?;
         writer
             .write_packet(SecurityCapabilityCheck {
-                flag: HandshakeContent::FINISH,
-                challenge: Some(challenge),
+                flag: initial_handshake_flag(init.encryption_seed.is_some(), init.checks.is_some()),
+                blowfish_seed,
+                seed_count: count,
+                seed_crc: crc,
+                handshake_init: encryption,
                 ..Default::default()
             })
             .await?;
+
+        if init.encryption_seed.is_some() {
+            let response = reader.next_packet().await?;
+            let Ok(challenge) = response.into_packet::<HandshakeChallenge>() else {
+                return Err(HandshakeError::NoChallengeReceived);
+            };
+
+            let challenge = setup.start_challenge(challenge.b, challenge.key)?;
+            writer
+                .write_packet(SecurityCapabilityCheck {
+                    flag: HandshakeContent::FINISH,
+                    challenge: Some(challenge),
+                    ..Default::default()
+                })
+                .await?;
+        }
 
         let response = reader.next_packet().await?;
         if response.into_packet::<HandshakeAccepted>().is_err() {
@@ -358,11 +380,13 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S>
             return Err(HandshakeError::FinalizationNotAccepted); // TODO
         };
 
-        if capability.flag == HandshakeContent::NONE {
-            return Ok(());
-        }
+        let (supports_encryption, supports_checks) = initial_handshake_features(capability.flag)?;
 
-        if let Some(checks) = capability.check_bytes_init() {
+        let checks = capability.check_bytes_init();
+        if supports_checks != checks.is_some() {
+            return Err(HandshakeError::InvalidContentFlag);
+        }
+        if let Some(checks) = checks {
             let security_bytes = Arc::new(SecurityBytes::from_seeds(
                 checks.crc_seed,
                 checks.count_seed,
@@ -371,6 +395,9 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S>
         }
 
         let encryption_seed = capability.passive_encryption_init();
+        if supports_encryption != encryption_seed.is_some() {
+            return Err(HandshakeError::InvalidContentFlag);
+        }
         let challenge = handshake.initialize(encryption_seed)?;
 
         if let Some((key, b)) = challenge {
@@ -380,7 +407,7 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S>
             let Ok(capability) = finalize.into_packet::<SecurityCapabilityCheck>() else {
                 return Err(HandshakeError::FinalizationNotAccepted); // TODO
             };
-            if !capability.flag == HandshakeContent::FINISH {
+            if capability.flag != HandshakeContent::FINISH {
                 return Err(HandshakeError::InvalidContentFlag);
             }
 
@@ -389,8 +416,9 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S>
             };
 
             handshake.finish(challenge)?;
-            writer.write_packet(HandshakeAccepted).await?;
         }
+
+        writer.write_packet(HandshakeAccepted).await?;
 
         if let Some(encryption) = handshake.done()? {
             let encryption = Arc::new(encryption);
@@ -415,8 +443,88 @@ mod test {
         content: String,
     }
 
-    #[tokio::test]
-    async fn test() {
+    #[derive(Packet, ByteSize, Serialize, Deserialize)]
+    #[packet(opcode = 0x4243)]
+    struct PlainTest {
+        content: String,
+    }
+
+    #[test]
+    fn initial_handshake_wire_layout_matches_selected_features() {
+        use bytes::BytesMut;
+        use skrillax_serde::SerdeContext;
+
+        const BLOWFISH_SEED: u64 = 0x0807_0605_0403_0201;
+        const COUNT_SEED: u32 = 0x0C0B_0A09;
+        const CRC_SEED: u32 = 0x100F_0E0D;
+        const HANDSHAKE_SEED: u64 = 0x1817_1615_1413_1211;
+        const A: u32 = 0x1C1B_1A19;
+        const B: u32 = 0x201F_1E1D;
+        const C: u32 = 0x2423_2221;
+
+        for (features, expected_flag) in [
+            (SecurityFeature::empty(), 0x01),
+            (SecurityFeature::CHECKS, 0x04),
+            (SecurityFeature::ENCRYPTION, 0x0A),
+            (SecurityFeature::all(), 0x0E),
+        ] {
+            let encryption = features.contains(SecurityFeature::ENCRYPTION);
+            let checks = features.contains(SecurityFeature::CHECKS);
+            let packet = SecurityCapabilityCheck {
+                flag: initial_handshake_flag(encryption, checks),
+                blowfish_seed: encryption.then_some(BLOWFISH_SEED),
+                seed_count: checks.then_some(COUNT_SEED),
+                seed_crc: checks.then_some(CRC_SEED),
+                handshake_init: encryption.then_some(HandshakeInitialization {
+                    handshake_seed: HANDSHAKE_SEED,
+                    a: A,
+                    b: B,
+                    c: C,
+                }),
+                ..Default::default()
+            };
+
+            let mut expected = vec![expected_flag];
+            if encryption {
+                expected.extend_from_slice(&BLOWFISH_SEED.to_le_bytes());
+            }
+            if checks {
+                expected.extend_from_slice(&COUNT_SEED.to_le_bytes());
+                expected.extend_from_slice(&CRC_SEED.to_le_bytes());
+            }
+            if encryption {
+                expected.extend_from_slice(&HANDSHAKE_SEED.to_le_bytes());
+                expected.extend_from_slice(&A.to_le_bytes());
+                expected.extend_from_slice(&B.to_le_bytes());
+                expected.extend_from_slice(&C.to_le_bytes());
+            }
+
+            let mut serialized = BytesMut::new();
+            packet.write_to_end(&mut serialized, &SerdeContext::default());
+            assert_eq!(serialized.as_ref(), expected);
+            assert_eq!(packet.byte_size(), expected.len());
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_initial_handshake_flags() {
+        for flag in [
+            HandshakeContent::empty(),
+            HandshakeContent::INIT_BLOWFISH,
+            HandshakeContent::START_HANDSHAKE,
+            HandshakeContent::NONE | HandshakeContent::SETUP_CHECKS,
+            HandshakeContent::FINISH,
+        ] {
+            assert!(initial_handshake_features(flag).is_err());
+        }
+    }
+
+    async fn assert_handshake_for_features(features: SecurityFeature) {
+        use tokio::time::{Duration, timeout};
+
+        let timeout_after = Duration::from_secs(5);
+        let encryption = features.contains(SecurityFeature::ENCRYPTION);
+        let checks = features.contains(SecurityFeature::CHECKS);
         let server = TcpSocket::new_v4().unwrap();
         server.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let listen_addr = server.local_addr().unwrap();
@@ -424,42 +532,113 @@ mod test {
         let server_registry = PacketRegistry::builder()
             .register_active_handshake()
             .register::<Test>()
+            .register::<PlainTest>()
             .build();
-
         let client_registry = PacketRegistry::builder()
             .register_passive_handshake()
             .register::<Test>()
+            .register::<PlainTest>()
             .build();
 
-        let server_await = tokio::spawn(async move {
-            let (client_socket, _) = server_listener.accept().await.unwrap();
-            let (mut reader, mut writer) = client_socket.into_silkroad_stream(server_registry);
-            ActiveSecuritySetup::handle(&mut reader, &mut writer)
+        let server = tokio::spawn(async move {
+            let (socket, _) = server_listener.accept().await.unwrap();
+            let (mut reader, mut writer) = socket.into_silkroad_stream(server_registry);
+            ActiveSecuritySetup::handle_with_features(&mut reader, &mut writer, features)
                 .await
                 .unwrap();
-            assert!(reader.encryption().is_some());
-            assert!(writer.encryption().is_some());
+            assert_eq!(reader.encryption().is_some(), encryption);
+            assert_eq!(writer.encryption().is_some(), encryption);
+            assert_eq!(reader.security_bytes().is_some(), checks);
+            assert!(writer.security_bytes().is_none());
+
             let packet = reader.next_packet().await.unwrap();
-            assert_eq!(packet.into_packet::<Test>().unwrap().content, "Hello!");
+            if encryption {
+                assert_eq!(packet.into_packet::<Test>().unwrap().content, "encrypted");
+                writer
+                    .write_packet(Test {
+                        content: String::from("encrypted reply"),
+                    })
+                    .await
+                    .unwrap();
+            } else {
+                assert_eq!(packet.into_packet::<PlainTest>().unwrap().content, "plain");
+                writer
+                    .write_packet(PlainTest {
+                        content: String::from("plain reply"),
+                    })
+                    .await
+                    .unwrap();
+            }
         });
 
-        let client = TcpSocket::new_v4()
+        let socket = TcpSocket::new_v4()
             .unwrap()
             .connect(listen_addr)
             .await
             .unwrap();
-        let (mut reader, mut writer) = client.into_silkroad_stream(client_registry);
-        PassiveSecuritySetup::handle(&mut reader, &mut writer)
+        let (mut reader, mut writer) = socket.into_silkroad_stream(client_registry);
+        timeout(
+            timeout_after,
+            PassiveSecuritySetup::handle(&mut reader, &mut writer),
+        )
+        .await
+        .expect("passive handshake timed out")
+        .unwrap();
+        assert_eq!(reader.encryption().is_some(), encryption);
+        assert_eq!(writer.encryption().is_some(), encryption);
+        assert!(reader.security_bytes().is_none());
+        assert_eq!(writer.security_bytes().is_some(), checks);
+
+        if encryption {
+            writer
+                .write_packet(Test {
+                    content: String::from("encrypted"),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                timeout(timeout_after, reader.next_packet())
+                    .await
+                    .expect("encrypted reply timed out")
+                    .unwrap()
+                    .into_packet::<Test>()
+                    .unwrap()
+                    .content,
+                "encrypted reply"
+            );
+        } else {
+            writer
+                .write_packet(PlainTest {
+                    content: String::from("plain"),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                timeout(timeout_after, reader.next_packet())
+                    .await
+                    .expect("plain reply timed out")
+                    .unwrap()
+                    .into_packet::<PlainTest>()
+                    .unwrap()
+                    .content,
+                "plain reply"
+            );
+        }
+        timeout(timeout_after, server)
             .await
+            .expect("active handshake timed out")
             .unwrap();
-        assert!(reader.encryption().is_some());
-        assert!(writer.encryption().is_some());
-        writer
-            .write_packet(Test {
-                content: String::from("Hello!"),
-            })
-            .await
-            .unwrap();
-        server_await.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn handshake_feature_matrix() {
+        for features in [
+            SecurityFeature::empty(),
+            SecurityFeature::CHECKS,
+            SecurityFeature::ENCRYPTION,
+            SecurityFeature::all(),
+        ] {
+            assert_handshake_for_features(features).await;
+        }
     }
 }

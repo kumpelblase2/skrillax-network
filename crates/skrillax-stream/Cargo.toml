@@ -31,4 +31,4 @@ futures = "0.3"
 bitflags = "2"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "net", "macros"] }
+tokio = { version = "1", features = ["rt", "net", "macros", "time"] }
