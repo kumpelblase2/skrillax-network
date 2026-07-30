@@ -35,7 +35,16 @@ pub enum FrameParseError {
 }
 
 const MASSIVE_PACKET_OPCODE: u16 = 0x600D;
+const ENCRYPTED_FRAME_FLAG: u16 = 0x8000;
+const FRAME_CONTENT_LENGTH_MASK: u16 = 0x7FFF;
 const ENCRYPTED_ALIGNMENT: usize = 8;
+
+/// The largest content length representable without setting the encrypted-frame
+/// flag.
+pub const MAX_FRAME_CONTENT_SIZE: usize = FRAME_CONTENT_LENGTH_MASK as usize;
+/// The largest payload a massive container can carry after its one-byte mode
+/// field.
+pub const MAX_MASSIVE_CONTAINER_INNER_SIZE: usize = MAX_FRAME_CONTENT_SIZE - 1;
 
 /// Find the nearest block-aligned length.
 ///
@@ -153,8 +162,8 @@ impl SilkroadFrame {
         }
 
         let length = LittleEndian::read_u16(&data[0..2]);
-        let encrypted = length & 0x8000 != 0;
-        let content_size = (length & 0x7FFF) as usize;
+        let encrypted = length & ENCRYPTED_FRAME_FLAG != 0;
+        let content_size = (length & FRAME_CONTENT_LENGTH_MASK) as usize;
         let total_size = if encrypted {
             find_encrypted_length(content_size + 4)
         } else {
@@ -304,7 +313,7 @@ impl SilkroadFrame {
                 content_size,
                 encrypted_data,
             } => {
-                output.put_u16_le((*content_size | 0x8000) as u16);
+                output.put_u16_le((*content_size as u16) | ENCRYPTED_FRAME_FLAG);
                 output.put_slice(encrypted_data);
             },
             SilkroadFrame::MassiveHeader {

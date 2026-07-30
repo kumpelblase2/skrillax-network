@@ -55,7 +55,7 @@
 //! packet. The name is automatically considered to be the structure's name.
 
 use bytes::{BufMut, Bytes, BytesMut};
-use skrillax_codec::{FrameParseError, SilkroadFrame};
+use skrillax_codec::{FrameParseError, MAX_MASSIVE_CONTAINER_INNER_SIZE, SilkroadFrame};
 use skrillax_security::handshake::CheckBytesInitialization;
 use skrillax_security::{Checksum, ChecksumBuilder, MessageCounter, SilkroadEncryption};
 use std::sync::Mutex;
@@ -209,12 +209,24 @@ where
 }
 
 #[cfg(feature = "serde")]
+fn split_massive_payload(mut data: Bytes) -> Vec<Bytes> {
+    let required_packets = data.len().div_ceil(MAX_MASSIVE_CONTAINER_INNER_SIZE).max(1);
+    let mut packets = Vec::with_capacity(required_packets);
+
+    while data.len() > MAX_MASSIVE_CONTAINER_INNER_SIZE {
+        packets.push(data.split_to(MAX_MASSIVE_CONTAINER_INNER_SIZE));
+    }
+    packets.push(data);
+
+    packets
+}
+
+#[cfg(feature = "serde")]
 impl<T> AsPacket for [T]
 where
     T: Packet + Serialize + ByteSize,
 {
     fn as_packet(&self, ctx: &SerdeContext) -> OutgoingPacket {
-        use std::cmp::{max, min};
         assert!(T::MASSIVE, "Can only transform massive packets");
         let total_size = self.iter().map(|p| p.byte_size()).sum();
         let mut buffer = BytesMut::with_capacity(total_size);
@@ -222,17 +234,9 @@ where
             p.write_to(&mut buffer, ctx);
         }
 
-        let mut data = buffer.freeze();
-        let required_packets = max(data.len() / 0x7FFF, 1);
-
-        let mut result = Vec::with_capacity(required_packets);
-        for _ in 0..required_packets {
-            result.push(data.split_to(min(0x7FFF, data.len())));
-        }
-
         OutgoingPacket::Massive {
             opcode: T::ID,
-            packets: result,
+            packets: split_massive_payload(buffer.freeze()),
         }
     }
 }
@@ -243,22 +247,12 @@ where
     T: Packet + Serialize + ByteSize,
 {
     fn as_packet(&self, ctx: &SerdeContext) -> OutgoingPacket {
-        use std::cmp::{max, min};
-
         let mut buffer = BytesMut::with_capacity(self.byte_size());
         self.write_to(&mut buffer, ctx);
         if Self::MASSIVE {
-            let mut data = buffer.freeze();
-            let required_packets = max(data.len() / 0x7FFF, 1);
-
-            let mut result = Vec::with_capacity(required_packets);
-            for _ in 0..required_packets {
-                result.push(data.split_to(min(0x7FFF, data.len())));
-            }
-
             OutgoingPacket::Massive {
                 opcode: Self::ID,
-                packets: result,
+                packets: split_massive_payload(buffer.freeze()),
             }
         } else if Self::ENCRYPTED {
             OutgoingPacket::Encrypted {
@@ -278,6 +272,10 @@ where
 pub enum FramingError {
     #[error("Tried to create an encrypted frame but no encrypted was set up")]
     MissingEncryption,
+    #[error("Massive container payload has {actual} bytes, but the maximum is {maximum} bytes")]
+    MassiveContainerTooLarge { actual: usize, maximum: usize },
+    #[error("Massive packet has {actual} containers, but the maximum is {maximum}")]
+    TooManyMassiveContainers { actual: usize, maximum: usize },
 }
 
 /// A procedure to turn an element into actual [SilkroadFrame]s,
@@ -296,16 +294,15 @@ pub trait AsFrames {
 
 impl AsFrames for OutgoingPacket {
     fn as_frames(&self, context: SecurityContext) -> Result<Vec<SilkroadFrame>, FramingError> {
-        let count = context
-            .checkers()
-            .map(|check| check.generate_count_byte())
-            .unwrap_or(0);
-
         match self {
             OutgoingPacket::Encrypted { opcode, data } => {
                 let Some(encryption) = context.encryption() else {
                     return Err(FramingError::MissingEncryption);
                 };
+                let count = context
+                    .checkers()
+                    .map(|check| check.generate_count_byte())
+                    .unwrap_or(0);
                 let content_length = data.len() + 4;
                 let length_with_padding = SilkroadEncryption::find_encrypted_length(content_length);
                 let mut new_buffer = BytesMut::with_capacity(length_with_padding);
@@ -336,6 +333,10 @@ impl AsFrames for OutgoingPacket {
                 }])
             },
             OutgoingPacket::Simple { opcode, data } => {
+                let count = context
+                    .checkers()
+                    .map(|check| check.generate_count_byte())
+                    .unwrap_or(0);
                 let crc = if let Some(mut checksum_builder) = context
                     .checkers()
                     .map(|checkers| checkers.checksum_builder())
@@ -358,6 +359,25 @@ impl AsFrames for OutgoingPacket {
                 }])
             },
             OutgoingPacket::Massive { opcode, packets } => {
+                let contained_count = u16::try_from(packets.len()).map_err(|_| {
+                    FramingError::TooManyMassiveContainers {
+                        actual: packets.len(),
+                        maximum: usize::from(u16::MAX),
+                    }
+                })?;
+                for packet in packets {
+                    if packet.len() > MAX_MASSIVE_CONTAINER_INNER_SIZE {
+                        return Err(FramingError::MassiveContainerTooLarge {
+                            actual: packet.len(),
+                            maximum: MAX_MASSIVE_CONTAINER_INNER_SIZE,
+                        });
+                    }
+                }
+
+                let count = context
+                    .checkers()
+                    .map(|check| check.generate_count_byte())
+                    .unwrap_or(0);
                 let mut frames = Vec::with_capacity(1 + packets.len());
 
                 let crc = if let Some(mut checksum_builder) = context
@@ -370,7 +390,7 @@ impl AsFrames for OutgoingPacket {
                     checksum_builder.update_byte(0);
                     checksum_builder.update_byte(1);
                     checksum_builder.update(&opcode.to_le_bytes());
-                    checksum_builder.update(&(packets.len() as u16).to_le_bytes());
+                    checksum_builder.update(&contained_count.to_le_bytes());
                     checksum_builder.digest()
                 } else {
                     0
@@ -380,10 +400,10 @@ impl AsFrames for OutgoingPacket {
                     count,
                     crc,
                     contained_opcode: *opcode,
-                    contained_count: packets.len() as u16,
+                    contained_count,
                 });
 
-                for packet in packets.iter() {
+                for packet in packets {
                     let count = context
                         .checkers()
                         .map(|check| check.generate_count_byte())
