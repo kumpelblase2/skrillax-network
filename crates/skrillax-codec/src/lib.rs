@@ -12,7 +12,27 @@
 //! [SilkroadFrame]'s serialization and deserialization functions.
 
 use byteorder::{ByteOrder, LittleEndian};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+#[cfg(feature = "codec")]
+use bytes::Buf;
+use bytes::{BufMut, Bytes, BytesMut};
+use thiserror::Error;
+
+/// An error encountered while parsing bytes into a [`SilkroadFrame`].
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum FrameParseError {
+    /// The length prefix or declared frame body has not been received in full.
+    #[error("frame requires at least {additional} additional byte(s)")]
+    Incomplete { additional: usize },
+    /// Frame data does not contain the opcode, security count, and CRC fields.
+    #[error("frame data requires at least 4 bytes, but only {actual} were provided")]
+    FrameTooShort { actual: usize },
+    /// A massive frame does not contain its required mode byte.
+    #[error("massive frame is missing its mode byte")]
+    MissingMassiveMode,
+    /// A massive header does not contain all of its required fields.
+    #[error("massive header requires at least 10 bytes, but only {actual} were provided")]
+    MassiveHeaderTooShort { actual: usize },
+}
 
 const MASSIVE_PACKET_OPCODE: u16 = 0x600D;
 const ENCRYPTED_ALIGNMENT: usize = 8;
@@ -118,10 +138,18 @@ impl SilkroadFrame {
     /// Tries to parse the first possible frame from the given data slice.
     /// In addition to the created frame, it will also return the size of
     /// consumed bytes by the frame. If not enough data is available, it
-    /// will return [Err] with the bytes required to finish the frame.
-    pub fn parse(data: &[u8]) -> Result<(usize, SilkroadFrame), usize> {
+    /// returns [`FrameParseError::Incomplete`]. The returned value in
+    /// `FrameParseError::Incomplete` is not guaranteed to be the exact
+    /// necessary bytes; it is possible to get it multiple times, even
+    /// when ensuring at least the amount of returned requested bytes were
+    /// added. This is because if we _need_ the header info first and
+    /// only then can we know the expected size.
+    /// Complete but malformed frames return a structural parsing error.
+    pub fn parse(data: &[u8]) -> Result<(usize, SilkroadFrame), FrameParseError> {
         if data.len() < 2 {
-            return Err(2 - data.len());
+            return Err(FrameParseError::Incomplete {
+                additional: 2 - data.len(),
+            });
         }
 
         let length = LittleEndian::read_u16(&data[0..2]);
@@ -135,7 +163,9 @@ impl SilkroadFrame {
 
         let data = &data[2..];
         if data.len() < total_size {
-            return Err(total_size - data.len());
+            return Err(FrameParseError::Incomplete {
+                additional: total_size - data.len(),
+            });
         }
 
         let total_consumed = total_size + 2;
@@ -150,7 +180,7 @@ impl SilkroadFrame {
             ));
         }
 
-        Ok((total_consumed, Self::from_data(&data)))
+        Ok((total_consumed, Self::from_data(&data)?))
     }
 
     /// Creates a [SilkroadFrame] given the received data. Generally, this will
@@ -159,45 +189,47 @@ impl SilkroadFrame {
     /// consisting of a [SilkroadFrame::MassiveHeader] and multiple
     /// [SilkroadFrame::MassiveContainer]s.
     ///
-    /// This assumes the data is well-formed, i.e., first two bytes opcode, one
-    /// byte security count, one byte crc, and the rest data. If the data
-    /// represents a massive frame, it's also expected that the massive
-    /// information has the correct format. In other cases, this will
-    /// currently _panic_.
-    pub fn from_data(data: &[u8]) -> SilkroadFrame {
-        assert!(data.len() >= 4);
+    /// The data must contain the two-byte opcode, one-byte security count,
+    /// one-byte CRC, and any frame-specific fields. Malformed data is returned
+    /// as a typed error.
+    pub fn from_data(data: &[u8]) -> Result<SilkroadFrame, FrameParseError> {
+        if data.len() < 4 {
+            return Err(FrameParseError::FrameTooShort { actual: data.len() });
+        }
+
         let opcode = LittleEndian::read_u16(&data[0..2]);
         let count = data[2];
         let crc = data[3];
 
         if opcode == MASSIVE_PACKET_OPCODE {
-            assert!(data.len() >= 5);
-            let mode = data[4];
+            let mode = *data.get(4).ok_or(FrameParseError::MissingMassiveMode)?;
             if mode == 1 {
-                assert!(data.len() >= 10);
+                if data.len() < 10 {
+                    return Err(FrameParseError::MassiveHeaderTooShort { actual: data.len() });
+                }
                 // 1 == Header
                 let inner_amount = LittleEndian::read_u16(&data[5..7]);
                 let inner_opcode = LittleEndian::read_u16(&data[7..9]);
-                SilkroadFrame::MassiveHeader {
+                Ok(SilkroadFrame::MassiveHeader {
                     count,
                     crc,
                     contained_opcode: inner_opcode,
                     contained_count: inner_amount,
-                }
+                })
             } else {
-                SilkroadFrame::MassiveContainer {
+                Ok(SilkroadFrame::MassiveContainer {
                     count,
                     crc,
                     inner: Bytes::copy_from_slice(&data[5..]),
-                }
+                })
             }
         } else {
-            SilkroadFrame::Packet {
+            Ok(SilkroadFrame::Packet {
                 count,
                 crc,
                 opcode,
                 data: Bytes::copy_from_slice(&data[4..]),
-            }
+            })
         }
     }
 
@@ -340,7 +372,8 @@ mod codec {
                     src.advance(bytes_read);
                     Ok(Some(frame))
                 },
-                Err(_) => Ok(None),
+                Err(FrameParseError::Incomplete { .. }) => Ok(None),
+                Err(error) => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
             }
         }
     }
@@ -348,7 +381,7 @@ mod codec {
 
 #[cfg(test)]
 mod test {
-    use crate::{SilkroadCodec, SilkroadFrame};
+    use crate::{FrameParseError, SilkroadCodec, SilkroadFrame};
     use bytes::{Bytes, BytesMut};
     use tokio_util::codec::Decoder;
 
@@ -371,13 +404,60 @@ mod test {
 
     #[test]
     fn test_parse_incomplete() {
+        assert_eq!(
+            Err(FrameParseError::Incomplete { additional: 2 }),
+            SilkroadFrame::parse(&[])
+        );
+        assert_eq!(
+            Err(FrameParseError::Incomplete { additional: 1 }),
+            SilkroadFrame::parse(&[0x00])
+        );
+
         let data = [0x00, 0x00, 0x00, 0x00, 0x00];
         let res = SilkroadFrame::parse(&data);
-        assert!(matches!(res, Err(1)));
+        assert_eq!(Err(FrameParseError::Incomplete { additional: 1 }), res);
 
         let data = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00];
         let res = SilkroadFrame::parse(&data);
-        assert!(matches!(res, Err(1)));
+        assert_eq!(Err(FrameParseError::Incomplete { additional: 1 }), res);
+    }
+
+    #[test]
+    fn test_parse_rejects_massive_frame_without_mode() {
+        let data = [0x00, 0x00, 0x0D, 0x60, 0x00, 0x00];
+
+        let result = SilkroadFrame::parse(&data);
+
+        assert_eq!(Err(FrameParseError::MissingMassiveMode), result);
+    }
+
+    #[test]
+    fn test_parse_rejects_truncated_massive_header() {
+        for content_size in 1usize..6 {
+            let mut data = vec![content_size as u8, 0x00, 0x0D, 0x60, 0x00, 0x00, 0x01];
+            data.resize(6 + content_size, 0);
+
+            let result = SilkroadFrame::parse(&data);
+
+            assert_eq!(
+                Err(FrameParseError::MassiveHeaderTooShort {
+                    actual: 4 + content_size,
+                }),
+                result
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_data_rejects_short_frame() {
+        for actual in 0..4 {
+            let data = [0; 3];
+
+            assert_eq!(
+                Err(FrameParseError::FrameTooShort { actual }),
+                SilkroadFrame::from_data(&data[..actual])
+            );
+        }
     }
 
     #[test]
@@ -461,6 +541,18 @@ mod test {
             }),
             decoded
         );
+    }
+
+    #[test]
+    fn test_decoder_rejects_malformed_frame() {
+        let mut codec = SilkroadCodec;
+        let mut buffer = BytesMut::from(&[0x00, 0x00, 0x0D, 0x60, 0x00, 0x00][..]);
+
+        let error = codec
+            .decode(&mut buffer)
+            .expect_err("malformed frame should be rejected");
+
+        assert_eq!(std::io::ErrorKind::InvalidData, error.kind());
     }
 
     #[test]

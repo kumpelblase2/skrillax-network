@@ -55,7 +55,7 @@
 //! packet. The name is automatically considered to be the structure's name.
 
 use bytes::{BufMut, Bytes, BytesMut};
-use skrillax_codec::SilkroadFrame;
+use skrillax_codec::{FrameParseError, SilkroadFrame};
 use skrillax_security::handshake::CheckBytesInitialization;
 use skrillax_security::{Checksum, ChecksumBuilder, MessageCounter, SilkroadEncryption};
 use std::sync::Mutex;
@@ -429,6 +429,8 @@ pub enum ReframingError {
     MissingSecurity,
     #[error("The decryption of an encrypted packet did not yield a simple frame")]
     InvalidEncryptedData,
+    #[error("Could not parse the decrypted encrypted frame: {0}")]
+    InvalidEncryptedFrame(#[from] FrameParseError),
     #[error("The CRC byte was {received} by we expected to to be {expected}")]
     CrcCheckFailed { expected: u8, received: u8 },
     #[error("The count byte was {received} by we expected to to be {expected}")]
@@ -520,7 +522,13 @@ impl FromFrames for IncomingPacket {
                         .decrypt(encrypted_data)
                         .expect("Should be able to decrypt bytes");
 
-                    let frame = SilkroadFrame::from_data(&decrypted[0..(*content_size + 4)]);
+                    let Some(decrypted_data) = content_size
+                        .checked_add(4)
+                        .and_then(|payload_end| decrypted.get(0..payload_end))
+                    else {
+                        return Err(ReframingError::InvalidEncryptedData);
+                    };
+                    let frame = SilkroadFrame::from_data(decrypted_data)?;
                     return match frame {
                         SilkroadFrame::Packet {
                             opcode,
@@ -732,5 +740,32 @@ impl<'a> SecurityContext<'a> {
     /// Provide the security bytes/checkers, if present.
     pub fn checkers(&self) -> Option<&SecurityBytes> {
         self.checkers
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_encrypted_massive_frame_returns_parse_error() {
+        let encryption = SilkroadEncryption::from_key(0xFF00FF00FF00FF00);
+        let encrypted_data = encryption
+            .encrypt(&[0x0D, 0x60, 0, 0, 1])
+            .expect("encrypting test data should succeed");
+        let frame = SilkroadFrame::Encrypted {
+            content_size: 1,
+            encrypted_data,
+        };
+
+        let result =
+            IncomingPacket::from_frames(&[frame], SecurityContext::new(Some(&encryption), None));
+
+        assert!(matches!(
+            result,
+            Err(ReframingError::InvalidEncryptedFrame(
+                FrameParseError::MassiveHeaderTooShort { actual: 5 }
+            ))
+        ));
     }
 }

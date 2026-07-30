@@ -19,4 +19,5 @@ codec = ["dep:tokio-util"]
 [dependencies]
 bytes.workspace = true
 byteorder.workspace = true
+thiserror.workspace = true
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
