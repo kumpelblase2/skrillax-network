@@ -35,6 +35,8 @@ pub enum OutStreamError {
     /// be built, but no encryption has been configured.
     #[error("Error occurred when trying to create frames")]
     Framing(#[from] FramingError),
+    #[error("An error occurred at the packet level")]
+    PacketError(#[from] PacketError),
     #[error("Opcode {0} was not registered.")]
     UnknownOpcode(u16),
 }

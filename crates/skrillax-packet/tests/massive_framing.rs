@@ -115,7 +115,9 @@ fn assert_massive_round_trip(
 fn single_massive_packet_preserves_boundary_payloads() {
     for (size, expected_container_sizes) in boundary_cases() {
         let expected = payload(size);
-        let outgoing = RawMassive(expected.clone()).as_packet(&SerdeContext::default());
+        let outgoing = RawMassive(expected.clone())
+            .as_packet(&SerdeContext::default())
+            .expect("valid massive packet should serialize");
 
         assert_massive_round_trip(outgoing, &expected, &expected_container_sizes);
     }
@@ -129,7 +131,10 @@ fn massive_packet_slice_preserves_boundary_payloads() {
             .chunks(10_003)
             .map(|part| RawMassive(part.to_vec()))
             .collect::<Vec<_>>();
-        let outgoing = parts.as_slice().as_packet(&SerdeContext::default());
+        let outgoing = parts
+            .as_slice()
+            .as_packet(&SerdeContext::default())
+            .expect("valid massive packet slice should serialize");
 
         assert_massive_round_trip(outgoing, &expected, &expected_container_sizes);
     }

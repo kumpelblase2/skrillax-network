@@ -32,7 +32,9 @@ mod tests {
                 opcode: 0x0001,
                 data: Bytes::copy_from_slice(&[0x00, 0x00]),
             },
-            TestSerializeOnly { field: 0 }.as_packet(&SerdeContext::default())
+            TestSerializeOnly { field: 0 }
+                .as_packet(&SerdeContext::default())
+                .unwrap()
         );
     }
 

@@ -113,7 +113,7 @@ fn encode_fn<T: AsPacket + Send + 'static>(
     let casted = input
         .as_packet::<T>()
         .expect("Type should match generic type parameter");
-    Ok(casted.as_packet(context))
+    Ok(casted.as_packet(context)?)
 }
 
 impl PacketRegistryBuilder {

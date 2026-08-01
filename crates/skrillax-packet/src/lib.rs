@@ -163,14 +163,14 @@ impl OutgoingPacket {
 /// Generally, this will be either a single struct representing a single
 /// operation, or a 'protocol' enum containing a list of multiple packets. For
 /// convenience, this trait has a blanket implementation for everything which
-/// already implements [Packet] and [Deserialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Deserialize.html).
+/// already implements [Packet] and [Serialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Serialize.html).
 ///
 /// The analog is [TryFromPacket].
 pub trait AsPacket {
     /// Serializes this structure into a packet that can be sent over the wire.
     /// A [SerdeContext] is provided to control stateful parsing of packets if
     /// necessary for a request-response style of operation.
-    fn as_packet(&self, ctx: &SerdeContext) -> OutgoingPacket;
+    fn as_packet(&self, ctx: &SerdeContext) -> Result<OutgoingPacket, PacketError>;
 }
 
 /// Defines _something_ that can be created from a packet, after it has been
@@ -226,18 +226,18 @@ impl<T> AsPacket for [T]
 where
     T: Packet + Serialize + ByteSize,
 {
-    fn as_packet(&self, ctx: &SerdeContext) -> OutgoingPacket {
+    fn as_packet(&self, ctx: &SerdeContext) -> Result<OutgoingPacket, PacketError> {
         assert!(T::MASSIVE, "Can only transform massive packets");
         let total_size = self.iter().map(|p| p.byte_size()).sum();
         let mut buffer = BytesMut::with_capacity(total_size);
         for p in self {
-            p.write_to(&mut buffer, ctx);
+            p.write_to(&mut buffer, ctx)?;
         }
 
-        OutgoingPacket::Massive {
+        Ok(OutgoingPacket::Massive {
             opcode: T::ID,
             packets: split_massive_payload(buffer.freeze()),
-        }
+        })
     }
 }
 
@@ -246,24 +246,24 @@ impl<T> AsPacket for T
 where
     T: Packet + Serialize + ByteSize,
 {
-    fn as_packet(&self, ctx: &SerdeContext) -> OutgoingPacket {
+    fn as_packet(&self, ctx: &SerdeContext) -> Result<OutgoingPacket, PacketError> {
         let mut buffer = BytesMut::with_capacity(self.byte_size());
-        self.write_to(&mut buffer, ctx);
+        self.write_to(&mut buffer, ctx)?;
         if Self::MASSIVE {
-            OutgoingPacket::Massive {
+            Ok(OutgoingPacket::Massive {
                 opcode: Self::ID,
                 packets: split_massive_payload(buffer.freeze()),
-            }
+            })
         } else if Self::ENCRYPTED {
-            OutgoingPacket::Encrypted {
+            Ok(OutgoingPacket::Encrypted {
                 opcode: Self::ID,
                 data: buffer.freeze(),
-            }
+            })
         } else {
-            OutgoingPacket::Simple {
+            Ok(OutgoingPacket::Simple {
                 opcode: Self::ID,
                 data: buffer.freeze(),
-            }
+            })
         }
     }
 }
