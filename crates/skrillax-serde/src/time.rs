@@ -79,7 +79,11 @@ impl Deref for SilkroadTime {
 }
 
 impl Serialize for SilkroadTime {
-    fn write_to(&self, writer: &mut BytesMut, ctx: &SerdeContext) {
+    fn write_to(
+        &self,
+        writer: &mut BytesMut,
+        ctx: &SerdeContext,
+    ) -> Result<(), SerializationError> {
         self.as_u32().write_to(writer, ctx)
     }
 }
@@ -104,7 +108,11 @@ impl Deserialize for SilkroadTime {
 }
 
 impl<T: TimeZone> Serialize for DateTime<T> {
-    fn write_to(&self, writer: &mut BytesMut, _ctx: &SerdeContext) {
+    fn write_to(
+        &self,
+        writer: &mut BytesMut,
+        _ctx: &SerdeContext,
+    ) -> Result<(), SerializationError> {
         let utc_time = self.to_utc();
         writer.put_u16_le(utc_time.year() as u16);
         writer.put_u16_le(utc_time.month() as u16);
@@ -113,6 +121,7 @@ impl<T: TimeZone> Serialize for DateTime<T> {
         writer.put_u16_le(utc_time.minute() as u16);
         writer.put_u16_le(utc_time.second() as u16);
         writer.put_u32_le(utc_time.timestamp_millis() as u32);
+        Ok(())
     }
 }
 
@@ -153,7 +162,9 @@ mod test {
         let time_now = Duration::from_secs(one_year + one_day + 35);
         let sro_time = SilkroadTime::from(time_now);
         let mut bytes = BytesMut::new();
-        sro_time.write_to(&mut bytes, &SerdeContext::default());
+        sro_time
+            .write_to(&mut bytes, &SerdeContext::default())
+            .unwrap();
         let written_bytes = bytes.freeze();
 
         assert_eq!(written_bytes.len(), 4);

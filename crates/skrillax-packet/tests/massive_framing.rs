@@ -24,8 +24,13 @@ impl ByteSize for RawMassive {
 }
 
 impl Serialize for RawMassive {
-    fn write_to(&self, writer: &mut BytesMut, _ctx: &SerdeContext) {
+    fn write_to(
+        &self,
+        writer: &mut BytesMut,
+        _ctx: &SerdeContext,
+    ) -> Result<(), skrillax_serde::SerializationError> {
         writer.put_slice(&self.0);
+        Ok(())
     }
 }
 

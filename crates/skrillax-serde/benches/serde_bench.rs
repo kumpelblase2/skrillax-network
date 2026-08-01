@@ -72,7 +72,7 @@ fn bench_deserialization(c: &mut Criterion) {
         b.iter(|| {
             buffer.clear();
             for root in &roots {
-                root.write_to_end(&mut buffer, black_box(&ctx));
+                root.write_to_end(&mut buffer, black_box(&ctx)).unwrap();
             }
             black_box(&buffer);
         })

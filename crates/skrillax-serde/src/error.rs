@@ -10,7 +10,7 @@ pub enum SerializationError {
     #[error("I/O error when serialize/deserializing packet at field {0}. {1:?}")]
     FieldIoError(&'static str, io::Error),
     #[error("The enum {1} does not have a variation for value {0}")]
-    UnknownVariation(usize, &'static str),
+    UnknownVariation(u64, &'static str),
     #[error("Could not convert bytes to a string")]
     StringParsingFailed(#[from] FromUtf8Error),
     #[error("Could not convert bytes to a utf16 string")]

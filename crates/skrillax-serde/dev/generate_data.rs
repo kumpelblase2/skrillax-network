@@ -87,7 +87,7 @@ fn main() {
     let ctx = SerdeContext::default();
     for _ in 0..items_count {
         let root = generate_random_root();
-        root.write_to_end(&mut buffer, &ctx);
+        root.write_to_end(&mut buffer, &ctx).unwrap();
     }
 
     let mut file = File::create(data_path).expect("failed to create data file");

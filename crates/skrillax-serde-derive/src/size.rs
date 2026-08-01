@@ -1,191 +1,202 @@
-use crate::{FieldArgs, SilkroadArgs, UsedType, get_type_of};
-use darling::FromAttributes;
+use crate::model::{
+    DataModel, FieldModel, FieldRole, Presence, SequenceFraming, StringEncoding, VariantModel,
+    WireModel, WireType,
+};
 use proc_macro2::{Ident, TokenStream};
 use proc_macro2_diagnostics::{Diagnostic, SpanDiagnosticExt};
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
-use syn::{Data, Field, Fields, Index, Type};
+use syn::{Fields, Index};
 
-pub(crate) fn size(
-    ident: &Ident,
-    data: &Data,
-    args: SilkroadArgs,
-) -> Result<TokenStream, Diagnostic> {
-    match data {
-        Data::Struct(struct_data) => match &struct_data.fields {
-            Fields::Named(named) => {
-                if named.named.is_empty() {
-                    return Ok(quote!(0));
-                }
-
-                let content = named
-                    .named
-                    .iter()
-                    .map(|field| {
-                        let ident = field.ident.as_ref().unwrap();
-                        generate_size_for(field, quote!(self.#ident))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(quote_spanned! { ident.span() =>
-                    #(#content)+*
-                })
-            },
-            Fields::Unnamed(unnamed) => {
-                let content = unnamed
-                    .unnamed
-                    .iter()
-                    .enumerate()
-                    .map(|(i, field)| {
-                        let ident = Index::from(i);
-                        generate_size_for(field, quote!(self.#ident))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(quote_spanned! { ident.span() =>
-                    #(#content)+*
-                })
-            },
-            Fields::Unit => Ok(quote!(0)),
+pub(crate) fn size(model: &WireModel<'_>) -> Result<TokenStream, Diagnostic> {
+    match &model.data {
+        DataModel::Struct(struct_model) => {
+            let terms = struct_model
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| generate_size_for(field, field_access(field, index)))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(sum(terms))
         },
-        Data::Enum(enum_data) => {
-            let arms = enum_data
+        DataModel::Enum(enum_model) => {
+            let arms = enum_model
                 .variants
                 .iter()
-                .map(|variant| -> Result<TokenStream, Diagnostic> {
-                    let name = &variant.ident;
-                    match &variant.fields {
-                        Fields::Named(named) => {
-                            let idents = named
-                                .named
-                                .iter()
-                                .map(|field| {
-                                    field
-                                        .ident
-                                        .as_ref()
-                                        .expect("Field of named struct should have a name")
-                                })
-                                .collect::<Vec<&Ident>>();
-                            let content = named
-                                .named
-                                .iter()
-                                .zip(&idents)
-                                .map(|(field, ident)| generate_size_for(field, quote!(#ident)))
-                                .collect::<Result<Vec<_>, _>>()?;
-
-                            Ok(quote_spanned! { name.span() =>
-                                #ident::#name { #(#idents),* } => {
-                                    #(#content)+*
-                                }
-                            })
-                        },
-                        Fields::Unnamed(unnamed) => {
-                            let idents = (0..unnamed.unnamed.len())
-                                .map(|i| format_ident!("t{}", i))
-                                .collect::<Vec<Ident>>();
-                            let content = unnamed
-                                .unnamed
-                                .iter()
-                                .zip(&idents)
-                                .map(|(field, ident)| generate_size_for(field, quote!(#ident)))
-                                .collect::<Result<Vec<_>, _>>()?;
-
-                            Ok(quote_spanned! { name.span() =>
-                                #ident::#name(#(#idents),*) => {
-                                    #(#content)+*
-                                }
-                            })
-                        },
-                        Fields::Unit => Ok(quote_spanned! { name.span() =>
-                            #ident::#name => 0
-                        }),
-                    }
-                })
+                .map(|variant| generate_variant_size(model.ident, variant))
                 .collect::<Result<Vec<_>, _>>()?;
-            let size = args.size.unwrap_or(1);
-            Ok(quote_spanned! { ident.span() =>
-                #size + match &self {
-                    #(#arms),*
-                }
-            })
-        },
-        Data::Union(_) => Ok(quote!(0)),
-    }
-}
-
-fn generate_size_for(field: &Field, ident: TokenStream) -> Result<TokenStream, Diagnostic> {
-    let ty = get_type_of(&field.ty)?;
-    let field_args = FieldArgs::from_attributes(&field.attrs)
-        .map_err(|_| field.span().error("Could not parse field attributes."))?;
-    match ty {
-        UsedType::Primitive => Ok(quote_spanned!(field.span() => #ident.byte_size())),
-        UsedType::String => {
-            let size = field_args.size.unwrap_or(1);
-            Ok(quote_spanned! { field.span() =>
-                2 + #ident.len() * #size
-            })
-        },
-        UsedType::Array(_) => Ok(quote_spanned!(field.span() => #ident.len())),
-        UsedType::Collection(inner) => {
-            let inner_ty = get_type_of(inner)?;
-            let inner_ts = generate_size_for_inner(inner, &inner_ty, quote!(elem))?;
-            let length_type = field_args.list_type.unwrap_or_else(|| "length".to_string());
-            if length_type == "break" || length_type == "has-more" {
-                Ok(quote_spanned! { field.span() =>
-                    1 + #ident.iter().map(|elem| #inner_ts + 1).sum::<usize>()
-                })
-            } else {
-                Ok(quote_spanned! { field.span() =>
-                    1 + #ident.iter().map(|elem| #inner_ts).sum::<usize>()
-                })
-            }
-        },
-        UsedType::Option(inner) => {
-            // If we don't have a `when` condition, we use that to determine if the content
-            // is included or not, which does not require an entry for the client to know.
-            // Because that also decides by the condition if there should be more.
-            let size: usize = if field_args.when.is_some() || field_args.size.unwrap_or(1) == 0 {
-                0
-            } else {
-                1
-            };
-            let inner_ty = get_type_of(inner)?;
-            let inner_ts = generate_size_for_inner(inner, &inner_ty, quote!(elem))?;
-            Ok(quote_spanned! { field.span() =>
-                #size + #ident.as_ref().map(|elem| #inner_ts).unwrap_or(0)
-            })
-        },
-        UsedType::Tuple(inner) => {
-            let content = (0..inner.len()).map(Index::from).map(|index| {
-                quote_spanned! { field.span() =>
-                    #ident.#index.byte_size()
-                }
-            });
-            Ok(quote_spanned! { field.span() =>
-                #(#content)+*
+            let discriminant: usize = enum_model.width.map_or(0, |width| width.bytes());
+            Ok(quote_spanned! {model.ident.span() =>
+                #discriminant + match &self { #(#arms),* }
             })
         },
     }
 }
 
-fn generate_size_for_inner(
-    ty: &Type,
-    used_type: &UsedType,
+fn field_access(field: &FieldModel<'_>, index: usize) -> TokenStream {
+    match &field.field.ident {
+        Some(ident) => quote!(self.#ident),
+        None => {
+            let index = Index::from(index);
+            quote!(self.#index)
+        },
+    }
+}
+
+fn generate_size_for(
+    field: &FieldModel<'_>,
     ident: TokenStream,
 ) -> Result<TokenStream, Diagnostic> {
-    match used_type {
-        UsedType::Primitive => Ok(quote!(#ident.byte_size())),
-        UsedType::String => Ok(quote!(2 + #ident.len())),
-        UsedType::Array(_) => Ok(quote!(#ident.len())),
-        UsedType::Collection(_) => Err(ty
-            .span()
-            .error("Cannot nest vectors. Create a wrapper struct instead.")),
-        UsedType::Option(_) => Err(ty
-            .span()
-            .error("Cannot nest options. Create a wrapper struct instead.")),
-        UsedType::Tuple(inner) => {
-            let content = (0..inner.len())
-                .map(Index::from)
-                .map(|index| quote!(#ident.#index.byte_size()));
-            Ok(quote!(#(#content)+*))
+    if !matches!(field.role, FieldRole::Wire) {
+        return Ok(quote!(0));
+    }
+
+    match &field.kind {
+        WireType::Delegated(_) => Ok(quote_spanned!(field.field.span() => #ident.byte_size())),
+        WireType::String => {
+            let multiplier: usize = match field.string_encoding.expect("strings have an encoding") {
+                StringEncoding::Utf8 => 1,
+                StringEncoding::Utf16 => 2,
+            };
+            Ok(quote_spanned! {field.field.span() => 2 + #ident.len() * #multiplier})
         },
+        WireType::Array { .. } => generate_size_value(&field.kind, ident, field.field.span()),
+        WireType::Collection { element } => {
+            let inner = generate_size_value(element, quote!(elem), field.field.span())?;
+            let body = quote!(#ident.iter().map(|elem| #inner).sum::<usize>());
+            let prefix = match field.framing.as_ref().expect("collections have framing") {
+                SequenceFraming::Counted { width } => {
+                    let bytes = width.bytes();
+                    quote!(#bytes)
+                },
+                SequenceFraming::Break { marker_width }
+                | SequenceFraming::HasMore { marker_width } => {
+                    let width = marker_width.bytes();
+                    quote!((#ident.len() + 1) * #width)
+                },
+                SequenceFraming::Calculated { .. } => quote!(0usize),
+            };
+            Ok(quote_spanned! {field.field.span() => #prefix + #body})
+        },
+        WireType::Optional { inner } => {
+            let inner_size = generate_size_value(inner, quote!(elem), field.field.span())?;
+            let marker = match field.presence.as_ref().expect("options have presence") {
+                Presence::Explicit { width } => width.bytes(),
+                Presence::Conditional { .. } | Presence::Bare => 0,
+            };
+            Ok(quote_spanned! {field.field.span() =>
+                #marker + #ident.as_ref().map(|elem| #inner_size).unwrap_or(0)
+            })
+        },
+        WireType::Tuple(items) => {
+            let terms = items
+                .iter()
+                .enumerate()
+                .map(|(index, kind)| {
+                    let index = Index::from(index);
+                    generate_size_value(kind, quote!(#ident.#index), field.field.span())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(sum(terms))
+        },
+    }
+}
+
+fn generate_size_value(
+    kind: &WireType<'_>,
+    ident: TokenStream,
+    span: proc_macro2::Span,
+) -> Result<TokenStream, Diagnostic> {
+    match kind {
+        WireType::Delegated(_) => Ok(quote!(#ident.byte_size())),
+        WireType::String => Ok(quote!(2 + #ident.len())),
+        WireType::Array { .. } => Ok(quote!(#ident.iter().map(ByteSize::byte_size).sum::<usize>())),
+        WireType::Collection { .. } | WireType::Optional { .. } => Err(span.error(
+            "Nested collections and options require a wrapper struct with explicit framing.",
+        )),
+        WireType::Tuple(_) => Err(span.error("Nested tuple values are not supported.")),
+    }
+}
+
+fn generate_variant_size(
+    ident: &Ident,
+    variant: &VariantModel<'_>,
+) -> Result<TokenStream, Diagnostic> {
+    let bindings = match &variant.variant.fields {
+        Fields::Named(fields) => fields
+            .named
+            .iter()
+            .filter_map(|field| field.ident.as_ref())
+            .cloned()
+            .collect::<Vec<_>>(),
+        Fields::Unnamed(fields) => (0..fields.unnamed.len())
+            .map(|index| format_ident!("t{index}"))
+            .collect::<Vec<_>>(),
+        Fields::Unit => Vec::new(),
+    };
+    let patterns = match &variant.variant.fields {
+        Fields::Named(fields) => fields
+            .named
+            .iter()
+            .zip(&bindings)
+            .enumerate()
+            .map(|(index, (field, binding))| {
+                let source = field.ident.as_ref().expect("named field has an ident");
+                if matches!(variant.fields[index].role, FieldRole::EnumTag) {
+                    let binding = format_ident!("_{binding}");
+                    quote!(#source: #binding)
+                } else {
+                    quote!(#source)
+                }
+            })
+            .collect::<Vec<_>>(),
+        Fields::Unnamed(_) => bindings
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| {
+                if matches!(variant.fields[index].role, FieldRole::EnumTag) {
+                    let binding = format_ident!("_{binding}");
+                    quote!(#binding)
+                } else {
+                    quote!(#binding)
+                }
+            })
+            .collect(),
+        Fields::Unit => Vec::new(),
+    };
+    let terms = variant
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            if !matches!(field.role, FieldRole::Wire) {
+                Ok(quote!(0))
+            } else {
+                let binding = &bindings[index];
+                generate_size_for(field, quote!(#binding))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let body = sum(terms);
+
+    let name = &variant.variant.ident;
+    match &variant.variant.fields {
+        Fields::Named(_) => Ok(quote_spanned! {name.span() =>
+            #ident::#name { #(#patterns),* } => #body
+        }),
+        Fields::Unnamed(_) => Ok(quote_spanned! {name.span() =>
+            #ident::#name(#(#patterns),*) => #body
+        }),
+        Fields::Unit => Ok(quote_spanned! {name.span() =>
+            #ident::#name => #body
+        }),
+    }
+}
+
+fn sum(terms: Vec<TokenStream>) -> TokenStream {
+    if terms.is_empty() {
+        quote!(0usize)
+    } else {
+        quote!(#(#terms)+*)
     }
 }

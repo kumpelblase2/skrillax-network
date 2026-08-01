@@ -11,18 +11,27 @@ error[E0599]: no method named `write_to` found for struct `Unrelated` in the cur
   = note: the following trait defines an item `write_to`, perhaps you need to implement it:
           candidate #1: `Serialize`
 
-error[E0599]: no associated function or constant named `read_from` found for struct `Unrelated` in the current scope
- --> tests/ui/unsupported_type.rs:9:5
+error[E0277]: the trait bound `Unrelated: Deserialize` is not satisfied
+ --> tests/ui/unsupported_type.rs:9:16
+  |
+9 |     unrelated: Unrelated,
+  |                ^^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `Deserialize` is not implemented for `Unrelated`
+ --> tests/ui/unsupported_type.rs:4:1
   |
 4 | struct Unrelated;
-  | ---------------- associated function or constant `read_from` not found for this struct
-...
-9 |     unrelated: Unrelated,
-  |     ^^^^^^^^^ associated function or constant not found in `Unrelated`
-  |
-  = help: items from traits can only be used if the trait is implemented and in scope
-  = note: the following trait defines an item `read_from`, perhaps you need to implement it:
-          candidate #1: `Deserialize`
+  | ^^^^^^^^^^^^^^^^
+  = help: the following other types implement trait `Deserialize`:
+            SilkroadTime
+            UnsupportedType
+            bool
+            chrono::datetime::DateTime<chrono::offset::utc::Utc>
+            f32
+            f64
+            i16
+            i32
+          and $N others
 
 error[E0599]: no method named `byte_size` found for struct `Unrelated` in the current scope
  --> tests/ui/unsupported_type.rs:9:5

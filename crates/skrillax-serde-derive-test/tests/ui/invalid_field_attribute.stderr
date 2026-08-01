@@ -1,4 +1,4 @@
-error: Tagged fields are not supported for structs.
+error: Tagged fields are not supported for structs or fixed enum variants.
  --> tests/ui/invalid_field_attribute.rs:9:5
   |
 9 |     #[silkroad(tag)]

@@ -500,7 +500,9 @@ mod test {
             }
 
             let mut serialized = BytesMut::new();
-            packet.write_to_end(&mut serialized, &SerdeContext::default());
+            packet
+                .write_to_end(&mut serialized, &SerdeContext::default())
+                .unwrap();
             assert_eq!(serialized.as_ref(), expected);
             assert_eq!(packet.byte_size(), expected.len());
         }

@@ -166,39 +166,19 @@
 //! the variant.
 
 use crate::deserialize::deserialize;
+use crate::model::{DeriveOperation, normalize};
 use crate::serialize::serialize;
 use crate::size::size;
-use darling::{FromAttributes, FromDeriveInput};
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use proc_macro2_diagnostics::{Diagnostic, SpanDiagnosticExt};
-use quote::{ToTokens, quote};
-use syn::spanned::Spanned;
-use syn::{DeriveInput, Expr, GenericArgument, PathArguments, Type};
+use proc_macro2_diagnostics::Diagnostic;
+use quote::quote;
+use syn::DeriveInput;
 
 mod deserialize;
+mod model;
 mod serialize;
 mod size;
-
-pub(crate) const DEFAULT_LIST_TYPE: &str = "length";
-
-#[derive(FromAttributes, Default)]
-#[darling(attributes(silkroad))]
-pub(crate) struct FieldArgs {
-    list_type: Option<String>,
-    size: Option<usize>,
-    value: Option<usize>,
-    when: Option<String>,
-    calculate: Option<String>,
-    #[darling(default)]
-    tag: bool,
-}
-
-#[derive(FromDeriveInput)]
-#[darling(attributes(silkroad))]
-pub(crate) struct SilkroadArgs {
-    size: Option<usize>,
-}
 
 #[proc_macro_derive(Serialize, attributes(silkroad))]
 pub fn derive_serialize(input: TokenStream) -> TokenStream {
@@ -209,23 +189,29 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
 
 fn expand_serialize(input: TokenStream2) -> Result<TokenStream2, Diagnostic> {
     let input: DeriveInput = syn::parse2(input)?;
-    let args = SilkroadArgs::from_derive_input(&input)
-        .map_err(|_| input.span().error("Failed to parse silkroad arguments."))?;
-    let DeriveInput { ident, data, .. } = input;
-    let output = serialize(&ident, &data, args)?;
+    let model = normalize(&input, DeriveOperation::Serialize)?;
+    let ident = model.ident;
+    let output = serialize(&model)?;
 
     Ok(quote! {
         impl skrillax_serde::Serialize for #ident {
-            fn write_to(&self, mut writer: &mut ::skrillax_serde::__internal::bytes::BytesMut, ctx: &skrillax_serde::SerdeContext) {
+            fn write_to(
+                &self,
+                writer: &mut ::skrillax_serde::__internal::bytes::BytesMut,
+                ctx: &skrillax_serde::SerdeContext,
+            ) -> Result<(), skrillax_serde::SerializationError> {
                 #output
+                Ok(())
             }
         }
 
-        impl From<#ident> for ::skrillax_serde::__internal::bytes::Bytes {
-            fn from(packet: #ident) -> ::skrillax_serde::__internal::bytes::Bytes {
+        impl TryFrom<#ident> for ::skrillax_serde::__internal::bytes::Bytes {
+            type Error = skrillax_serde::SerializationError;
+
+            fn try_from(packet: #ident) -> Result<Self, Self::Error> {
                 let mut buffer = ::skrillax_serde::__internal::bytes::BytesMut::with_capacity(packet.byte_size());
-                packet.write_to(&mut buffer, &skrillax_serde::SerdeContext::default());
-                buffer.freeze()
+                packet.write_to(&mut buffer, &skrillax_serde::SerdeContext::default())?;
+                Ok(buffer.freeze())
             }
         }
     })
@@ -240,10 +226,9 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
 
 fn expand_deserialize(input: TokenStream2) -> Result<TokenStream2, Diagnostic> {
     let input: DeriveInput = syn::parse2(input)?;
-    let args = SilkroadArgs::from_derive_input(&input)
-        .map_err(|_| input.span().error("Failed to parse silkroad arguments."))?;
-    let DeriveInput { ident, data, .. } = input;
-    let output = deserialize(&ident, &data, args)?;
+    let model = normalize(&input, DeriveOperation::Deserialize)?;
+    let ident = model.ident;
+    let output = deserialize(&model)?;
 
     Ok(quote! {
         impl skrillax_serde::Deserialize for #ident {
@@ -273,10 +258,9 @@ pub fn derive_size(input: TokenStream) -> TokenStream {
 
 fn expand_size(input: TokenStream2) -> Result<TokenStream2, Diagnostic> {
     let input: DeriveInput = syn::parse2(input)?;
-    let args = SilkroadArgs::from_derive_input(&input)
-        .map_err(|_| input.span().error("Failed to parse silkroad arguments."))?;
-    let DeriveInput { ident, data, .. } = input;
-    let output = size(&ident, &data, args)?;
+    let model = normalize(&input, DeriveOperation::ByteSize)?;
+    let ident = model.ident;
+    let output = size(&model)?;
 
     Ok(quote! {
         impl skrillax_serde::ByteSize for #ident {
@@ -285,112 +269,4 @@ fn expand_size(input: TokenStream2) -> Result<TokenStream2, Diagnostic> {
             }
         }
     })
-}
-
-#[derive(Debug)]
-pub(crate) enum UsedType<'a> {
-    Primitive,
-    String,
-    Array(&'a Expr),
-    Collection(&'a Type),
-    Option(&'a Type),
-    Tuple(Vec<&'a Type>),
-}
-
-pub(crate) fn get_type_of(ty: &Type) -> Result<UsedType<'_>, Diagnostic> {
-    match ty {
-        Type::Array(arr) => Ok(UsedType::Array(&arr.len)),
-        Type::Reference(_) => Err(ty
-            .span()
-            .error("References are not supported for (de)serialization.")),
-        Type::Tuple(tuple) => Ok(UsedType::Tuple(tuple.elems.iter().collect())),
-        Type::Path(path) => {
-            let full_name = path
-                .path
-                .segments
-                .iter()
-                .map(|segment| segment.ident.to_string())
-                .collect::<Vec<String>>()
-                .join("::");
-
-            if full_name == "String"
-                || full_name == "string::String"
-                || full_name == "std::string::String"
-            {
-                Ok(UsedType::String)
-            } else if full_name == "Vec" {
-                let arguments = &path
-                    .path
-                    .segments
-                    .last()
-                    .expect("Should have a last element given we have a non-empty type name")
-                    .arguments;
-                match arguments {
-                    PathArguments::None => Err(ty
-                        .span()
-                        .error("Missing generic parameters for collection type.")),
-                    PathArguments::Parenthesized(_) => {
-                        Err(ty.span().error("Cannot use parenthesized types."))
-                    },
-                    PathArguments::AngleBracketed(args) => args
-                        .args
-                        .iter()
-                        .find_map(|arg| match arg {
-                            GenericArgument::Type(ty) => Some(ty),
-                            _ => None,
-                        })
-                        .map(UsedType::Collection)
-                        .ok_or_else(|| {
-                            ty.span()
-                                .error("Missing generic parameters for collection type.")
-                        }),
-                }
-            } else if full_name == "Option" {
-                let arguments = &path
-                    .path
-                    .segments
-                    .last()
-                    .expect("Should have a last element given we have a non-empty type name")
-                    .arguments;
-                match arguments {
-                    PathArguments::None => Err(ty
-                        .span()
-                        .error("Missing generic parameters for option type.")),
-                    PathArguments::Parenthesized(_) => {
-                        Err(ty.span().error("Cannot use parenthesized types."))
-                    },
-                    PathArguments::AngleBracketed(args) => args
-                        .args
-                        .iter()
-                        .find_map(|arg| match arg {
-                            GenericArgument::Type(ty) => Some(ty),
-                            _ => None,
-                        })
-                        .map(UsedType::Option)
-                        .ok_or_else(|| {
-                            ty.span()
-                                .error("Missing generic parameters for option type.")
-                        }),
-                }
-            } else {
-                Ok(UsedType::Primitive)
-            }
-        },
-        _ => Err(ty.span().error("Encountered unknown syn type.")),
-    }
-}
-
-fn get_variant_value<T: Spanned + ToTokens>(
-    source: &T,
-    value: usize,
-    size: usize,
-) -> Result<Expr, Diagnostic> {
-    let ty = match size {
-        1 => "u8",
-        2 => "u16",
-        4 => "u32",
-        8 => "u64",
-        _ => return Err(source.span().error("Unknown size")),
-    };
-    syn::parse_str(&format!("{value}{ty}")).map_err(|_| source.span().error("Unknown size"))
 }

@@ -33,8 +33,13 @@ pub mod __internal {
 macro_rules! implement_primitive {
     ($tt:ty, $read:ident) => {
         impl Serialize for $tt {
-            fn write_to(&self, writer: &mut ::bytes::BytesMut, _ctx: &SerdeContext) {
+            fn write_to(
+                &self,
+                writer: &mut ::bytes::BytesMut,
+                _ctx: &SerdeContext,
+            ) -> Result<(), SerializationError> {
                 writer.put_slice(&self.to_le_bytes());
+                Ok(())
             }
         }
 
@@ -126,13 +131,18 @@ impl Default for SerdeContext {
 pub trait Serialize: ByteSize {
     /// Writes all bytes representing the content of the struct to the writer
     /// output.
-    fn write_to(&self, writer: &mut BytesMut, ctx: &SerdeContext);
+    fn write_to(&self, writer: &mut BytesMut, ctx: &SerdeContext)
+    -> Result<(), SerializationError>;
 
     /// Convenience around [self.write_to] which already reserves the necessary
     /// space.
-    fn write_to_end(&self, writer: &mut BytesMut, ctx: &SerdeContext) {
+    fn write_to_end(
+        &self,
+        writer: &mut BytesMut,
+        ctx: &SerdeContext,
+    ) -> Result<(), SerializationError> {
         writer.reserve(self.byte_size());
-        self.write_to(writer, ctx);
+        self.write_to(writer, ctx)
     }
 }
 
@@ -169,8 +179,13 @@ pub trait ByteSize {
 }
 
 impl Serialize for u8 {
-    fn write_to(&self, writer: &mut BytesMut, _ctx: &SerdeContext) {
+    fn write_to(
+        &self,
+        writer: &mut BytesMut,
+        _ctx: &SerdeContext,
+    ) -> Result<(), SerializationError> {
         writer.put_u8(*self);
+        Ok(())
     }
 }
 
@@ -193,9 +208,13 @@ impl Deserialize for u8 {
 }
 
 impl Serialize for bool {
-    fn write_to(&self, writer: &mut BytesMut, ctx: &SerdeContext) {
+    fn write_to(
+        &self,
+        writer: &mut BytesMut,
+        ctx: &SerdeContext,
+    ) -> Result<(), SerializationError> {
         let value = u8::from(*self);
-        value.write_to(writer, ctx);
+        value.write_to(writer, ctx)
     }
 }
 
@@ -269,26 +288,34 @@ mod test {
     #[test]
     fn test_serialize_primitive() {
         let mut buffer = BytesMut::new();
-        1u8.write_to_end(&mut buffer, &SerdeContext::default());
+        1u8.write_to_end(&mut buffer, &SerdeContext::default())
+            .unwrap();
         assert_eq!(&[1], buffer.freeze().as_ref());
         let mut buffer = BytesMut::new();
-        1u16.write_to_end(&mut buffer, &SerdeContext::default());
+        1u16.write_to_end(&mut buffer, &SerdeContext::default())
+            .unwrap();
         assert_eq!(&[1, 0], buffer.freeze().as_ref());
         let mut buffer = BytesMut::new();
-        1u32.write_to_end(&mut buffer, &SerdeContext::default());
+        1u32.write_to_end(&mut buffer, &SerdeContext::default())
+            .unwrap();
         assert_eq!(&[1, 0, 0, 0], buffer.freeze().as_ref());
         let mut buffer = BytesMut::new();
-        1u64.write_to_end(&mut buffer, &SerdeContext::default());
+        1u64.write_to_end(&mut buffer, &SerdeContext::default())
+            .unwrap();
         assert_eq!(&[1, 0, 0, 0, 0, 0, 0, 0], buffer.freeze().as_ref());
     }
 
     #[test]
     fn test_serialize_float_primitives() {
         let mut buffer = BytesMut::new();
-        42.42f32.write_to_end(&mut buffer, &SerdeContext::default());
+        42.42f32
+            .write_to_end(&mut buffer, &SerdeContext::default())
+            .unwrap();
         assert_eq!(&[0x14, 0xAE, 0x29, 0x42], buffer.freeze().as_ref());
         let mut buffer = BytesMut::new();
-        42.42f64.write_to_end(&mut buffer, &SerdeContext::default());
+        42.42f64
+            .write_to_end(&mut buffer, &SerdeContext::default())
+            .unwrap();
         assert_eq!(
             &[0xF6, 0x28, 0x5C, 0x8F, 0xC2, 0x35, 0x45, 0x40],
             buffer.freeze().as_ref()
