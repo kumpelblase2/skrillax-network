@@ -1,0 +1,47 @@
+error: Container `size` is only valid on enums.
+ --> tests/ui/invalid_shapes.rs:6:8
+  |
+6 | struct SizedStruct(u8);
+  |        ^^^^^^^^^^^
+
+error: A collection cannot directly contain a collection, Option, or tuple; use a wrapper struct with explicit wire attributes instead.
+ --> tests/ui/invalid_shapes.rs:9:25
+  |
+9 | struct NestedCollection(Vec<Vec<u8>>);
+  |                         ^^^
+
+error: An option cannot directly contain a collection, Option, or tuple; use a wrapper struct with explicit wire attributes instead.
+  --> tests/ui/invalid_shapes.rs:12:21
+   |
+12 | struct NestedOption(Option<Option<u8>>);
+   |                     ^^^^^^
+
+error: A collection cannot directly contain a collection, Option, or tuple; use a wrapper struct with explicit wire attributes instead.
+  --> tests/ui/invalid_shapes.rs:15:28
+   |
+15 | struct CollectionOfOptions(Vec<Option<u8>>);
+   |                            ^^^
+
+error: An option cannot directly contain a collection, Option, or tuple; use a wrapper struct with explicit wire attributes instead.
+  --> tests/ui/invalid_shapes.rs:18:27
+   |
+18 | struct OptionOfCollection(Option<Vec<u8>>);
+   |                           ^^^^^^
+
+error: Unions are not supported.
+  --> tests/ui/invalid_shapes.rs:21:1
+   |
+21 | union SerializeUnion {
+   | ^^^^^
+
+error: Unions are not supported.
+  --> tests/ui/invalid_shapes.rs:26:1
+   |
+26 | union DeserializeUnion {
+   | ^^^^^
+
+error: Unions are not supported.
+  --> tests/ui/invalid_shapes.rs:31:1
+   |
+31 | union ByteSizeUnion {
+   | ^^^^^

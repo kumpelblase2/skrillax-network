@@ -25,12 +25,12 @@ help: the trait `Deserialize` is not implemented for `Unrelated`
   = help: the following other types implement trait `Deserialize`:
             SilkroadTime
             UnsupportedType
+            [T; N]
             bool
             chrono::datetime::DateTime<chrono::offset::utc::Utc>
             f32
             f64
             i16
-            i32
           and $N others
 
 error[E0599]: no method named `byte_size` found for struct `Unrelated` in the current scope

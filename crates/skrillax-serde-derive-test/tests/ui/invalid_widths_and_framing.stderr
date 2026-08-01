@@ -1,0 +1,29 @@
+error: Invalid collection width 3; expected 1, 2, 4, or 8.
+ --> tests/ui/invalid_widths_and_framing.rs:6:5
+  |
+6 |     #[silkroad(size = 3)]
+  |     ^
+
+error: Invalid enum discriminant width 3; expected 1, 2, 4, or 8.
+  --> tests/ui/invalid_widths_and_framing.rs:12:1
+   |
+12 | enum EnumWidth {
+   | ^^^^
+
+error: Invalid option presence width 3; expected 1, 2, 4, or 8.
+  --> tests/ui/invalid_widths_and_framing.rs:19:5
+   |
+19 |     #[silkroad(size = 3)]
+   |     ^
+
+error: Invalid String size 4; expected 1 for UTF-8 or 2 for UTF-16.
+  --> tests/ui/invalid_widths_and_framing.rs:25:5
+   |
+25 |     #[silkroad(size = 4)]
+   |     ^
+
+error: Unknown list_type `mystery`; expected `length`, `break`, `has-more`, or `calculated`.
+  --> tests/ui/invalid_widths_and_framing.rs:31:5
+   |
+31 |     #[silkroad(list_type = "mystery")]
+   |     ^

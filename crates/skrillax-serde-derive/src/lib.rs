@@ -1,169 +1,193 @@
-//! Generally it should be enough to simply `#[derive(Deserialize)]` or
-//! whichever trait you need. Just like the more general `serde` crate, this
-//! will handle most common things, like fields of different types, including
-//! references to other structures. However, there are a few things to
-//! keep in mind. Silkroad Online packets are not self-specifying, and thus we
-//! often need to provide just a little bit of help to serialize/deserialize
-//! some kinds of data. In general, you can provide additional options through
-//! the `#[silkroad]` tag. Which options are available for which elements will
-//! be explained in the following section.
+//! Derive macros for the Silkroad wire traits in [`skrillax-serde`](https://docs.rs/skrillax-serde).
 //!
-//! ## Enums
+//! Silkroad packets are not self-describing. The `#[silkroad(...)]` attribute
+//! therefore supplies framing, presence, encoding, and enum-selection metadata
+//! that cannot be inferred from a Rust type alone. Derive expansion rejects
+//! unsupported placements and ambiguous combinations instead of guessing a
+//! wire format.
 //!
-//! Enums are generally serialized as one byte discriminant, followed by the
-//! content of that variant without further details. Currently, we don't
-//! automatically map the index of the enum variant to the discriminant. As
-//! such, you need to define a value manually. This can be done using
-//! `#[silkroad(value = 1)]` to set the variants byte value to `1`:
+//! Most packet types derive all three traits:
+//!
 //! ```ignore
-//! #[derive(Serialize, Deserialize)]
-//! enum Hello {
-//!     #[silkroad(value = 1)]
-//!     ClientHello(String),
-//!     #[silkroad(value = 2)]
-//!     ServerHello(String),
-//! }
-//! ```
-//! In some cases it may be necessary for the discriminant to be two bytes wide,
-//! which you can specify using `#[silkroad(size = 2)]` on the enum itself:
-//! ```ignore
-//! #[derive(Serialize, Deserialize)]
-//! #[silkroad(size = 2)]
-//! enum Hello {
-//!     #[silkroad(value = 0x400D)]
-//!     ClientHello(String),
+//! #[derive(Serialize, Deserialize, ByteSize)]
+//! struct Position {
+//!     region: u16,
+//!     x: f32,
+//!     y: f32,
 //! }
 //! ```
 //!
-//! ## Structs
+//! Struct and variant fields are concatenated in declaration order with no
+//! implicit separators. Unit structs and unit variant bodies occupy zero bytes.
 //!
-//! Structs are always serialized/deserialized by serializing/deserializing
-//! their fields. A unit struct therefor has length zero. There are also no
-//! options currently to alter the behavior for structs themselves, only their
-//! fields.
+//! ## Serialization and sizing contract
 //!
-//! ```ignore
-//! #[derive(Serialize, Deserialize)]
-//! struct Hello(String);
-//! ```
+//! Derived [`Serialize`](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Serialize.html)
+//! is fallible. It checks representability and value-dependent invariants when
+//! it reaches the relevant field, returning a typed `SerializationError`.
+//! Writes are not atomic: bytes already written to the destination remain when
+//! a later field fails. Use a fresh buffer, or record its original length and
+//! truncate it yourself if transactional behavior is required.
 //!
-//! ## Fields
+//! `ByteSize::byte_size()` is infallible and exactly matches serialized output
+//! for a well-formed value. It is an allocation estimate, not validation: its
+//! result is not authoritative for a value that `Serialize` would reject, and
+//! reserving that amount of space does not guarantee serialization will
+//! succeed.
 //!
-//! The serialization/deserialization of fields is identical between structs and
-//! enums. Each field is serialized one after another without any separators.
-//! Therefor, it is necessary to match the size exactly to the consumed bytes.
-//! Fields are serialized and deserialized in the order they are defined.
-//!
-//! ```ignore
-//! #[derive(Serialize, Deserialize)]
-//! struct Hello {
-//!     one_byte: u8,
-//!     two_bytes: u16,
-//! }
-//! ```
-//!
-//! ## Collections
-//!
-//! Collections (i.e. vectors) are encoded using one byte length followed by the
-//! elements of the collection without a separator. If the size is larger, this
-//! needs to be denoted using the `#[silkroad(size = 2)]` attribute.
-//! ```ignore
-//! #[derive(Serialize, Deserialize)]
-//! struct Hello {
-//!     #[silkroad(size = 2)]
-//!     greetings: Vec<String>,
-//! }
-//! ```
-//! The default size is 1 with a size of up to 4 being supported.
-//! Additionally, you may change the type of encoding for a collection using the
-//! `list_type` attribute. This accepts one of three options: `length`
-//! (default), `break`, and `has-more`. `break` and `has-more` specify before
-//! each element if another element will follow using different values. `break`
-//! uses `1` for 'has more values' and `2` for finished, while `has-more`
-//! uses `1` for more elements and `0` for being finished.
-//! ```ignore
-//! #[derive(Serialize, Deserialize)]
-//! struct Hello {
-//!     #[silkroad(list_type = "break")]
-//!     greetings: Vec<String>,
-//! }
-//! ```
+//! Deriving `Serialize` also generates `TryFrom<T> for bytes::Bytes`, using a
+//! default `SerdeContext`. It does not generate the old infallible
+//! `From<T> for bytes::Bytes`. Call `write_to` directly when a non-default
+//! context is needed.
 //!
 //! ## Strings
 //!
-//! Generally a string is encoded using two bytes length and then the UTF-8
-//! representation of that string. In some cases, Silkroad however uses two byte
-//! wide characters (UTF-16) in strings. This can be configured by using a
-//! `size` of 2.
+//! A `String` has a little-endian `u16` length prefix. With no `size` or with
+//! `size = 1`, the payload is UTF-8 and the prefix counts bytes. With
+//! `size = 2`, the payload is UTF-16LE and the prefix counts UTF-16 code units,
+//! including both units of a surrogate pair. Other string sizes are rejected.
+//!
 //! ```ignore
-//! #[derive(Serialize, Deserialize)]
-//! struct Hello {
+//! #[derive(Serialize, Deserialize, ByteSize)]
+//! struct Greeting {
+//!     normal: String,
 //!     #[silkroad(size = 2)]
-//!     greeting: String,
+//!     wide: String,
 //! }
 //! ```
 //!
-//! ## Optional
+//! Strings directly inside `Vec` and `Option` use the default UTF-8 codec.
+//! Use a wrapper struct when a nested string needs UTF-16.
 //!
-//! Optional values will be encoded using a byte denoting the presence (1) or
-//! absence (0), following the underlying value if it is present. In some cases,
-//! due to previous knowledge, optional values may just appear (or be missing)
-//! without the presence indicator. This makes them impossible to deserialize
-//! (currently), but this is unfortunately current necessary. To achieve this,
-//! you can set the size of the field to 0.
+//! ## Collections
+//!
+//! A `Vec<T>` defaults to `list_type = "length"` and `size = 1`: an unsigned
+//! count followed by the elements. Sizes `1`, `2`, `4`, and `8` select `u8`,
+//! `u16`, `u32`, and `u64` counts respectively.
+//!
 //! ```ignore
-//! #[derive(Serialize)]
-//! struct Hello {
-//!     #[silkroad(size = 0)]
-//!     greeting: Option<String>,
+//! #[derive(Serialize, Deserialize, ByteSize)]
+//! struct Inventory {
+//!     #[silkroad(size = 2)]
+//!     items: Vec<Item>,
 //! }
 //! ```
 //!
-//! Alternatively, if there is an indication in the data whether the value will
-//! be present or not, you can use the `when` attribute to specify a condition.
-//! In that case the presence byte will be omitted as well, but makes it
-//! possible to be deserialized. This does not make any checks for serialization
-//! and will always append a present value, ignoring the condition. The
-//! condition in `when` should denote an expression which returns a boolean,
-//! showing if the values is present in the packet or not. It is possible to
-//! access any previous values, but is currently limited to expressions without
-//! imports.
+//! Sentinel framing is selected with `list_type = "break"` or
+//! `list_type = "has-more"`. A marker precedes every element and a terminal
+//! marker follows the collection. `break` uses `1`/`2`; `has-more` uses
+//! `1`/`0`. Marker width is selected by `size` with the same `1`, `2`, `4`, and
+//! `8` mapping and defaults to one byte.
+//!
+//! A calculated collection has no collection-local count or marker. Its
+//! `calculate` expression determines the element count from earlier fields or
+//! `ctx`. Serialization requires that count to equal the vector length.
+//!
 //! ```ignore
-//! #[derive(Deserialize, Serialize)]
-//! struct Hello {
-//!     condition: u8
-//!     #[silkroad(when = "condition == 1")]
-//!     greeting: Option<String>
+//! #[derive(Serialize, Deserialize, ByteSize)]
+//! struct Inventory {
+//!     count: u16,
+//!     #[silkroad(list_type = "calculated", calculate = "count")]
+//!     items: Vec<Item>,
 //! }
 //! ```
 //!
-//! ## Conditional Tag Evaluation for Enums
+//! Directly nested collections and optional values are rejected because their
+//! framing would be implicit; use a wrapper struct to supply field metadata.
 //!
-//! For enums, you can use the `when` attribute to conditionally evaluate which
-//! variant to use based on the tag value. The tag value is available as `tag`
-//! in the condition expression.
+//! ## Optional fields
+//!
+//! An `Option<T>` normally has an unsigned `0`/`1` presence marker. The marker
+//! defaults to one byte; `size = 1`, `2`, `4`, or `8` selects its width.
+//! Deserialization rejects any marker other than `0` or `1`.
+//!
+//! `when` creates a marker-free conditional option. The condition may refer to
+//! earlier fields and `ctx`. During serialization, its boolean result must
+//! equal `Option::is_some()` or serialization returns
+//! `ConditionalPresenceMismatch`.
 //!
 //! ```ignore
-//! #[derive(Serialize, ByteSize, Deserialize)]
+//! #[derive(Serialize, Deserialize, ByteSize)]
+//! struct Greeting {
+//!     enabled: bool,
+//!     #[silkroad(when = "enabled")]
+//!     text: Option<String>,
+//! }
+//! ```
+//!
+//! `#[silkroad(size = 0)]` without `when` is a bare write-only option: `Some`
+//! emits the inner value and `None` emits nothing. It is supported by
+//! `Serialize` and `ByteSize`, but a `Deserialize` derive rejects it because
+//! absence cannot be distinguished from truncated input. `size = 0` may be
+//! combined with `when` to state explicitly that the condition controls
+//! presence.
+//!
+//! ## Calculated scalar fields
+//!
+//! `calculate` on a non-collection field makes that field synthetic. It emits
+//! and counts zero bytes. Deserialization computes it from earlier fields or
+//! `ctx`; serialization deliberately does not compare the stored value with
+//! the expression. A noncanonical stored value therefore serializes, but a
+//! round trip replaces it with the calculated value.
+//!
+//! ```ignore
+//! #[derive(Serialize, Deserialize, ByteSize)]
+//! struct Item {
+//!     raw_kind: u8,
+//!     #[silkroad(calculate = "ItemKind::from(raw_kind)")]
+//!     kind: ItemKind,
+//! }
+//! ```
+//!
+//! ## Arrays and tuples
+//!
+//! `[T; N]` has no prefix and supports any `T` implementing the relevant wire
+//! trait; its size is the sum of its elements. Tuple fields similarly
+//! concatenate supported elements. Direct `String`, `Vec`, or `Option` tuple
+//! elements are rejected in this version; use wrapper structs for metadata-
+//! sensitive nested values.
+//!
+//! ## Enums
+//!
+//! Enum discriminants default to one byte. Container `size = 1`, `2`, `4`, or
+//! `8` selects `u8`, `u16`, `u32`, or `u64`. Fixed selectors use a unique
+//! `value` that must fit that width:
+//!
+//! ```ignore
+//! #[derive(Serialize, Deserialize, ByteSize)]
 //! #[silkroad(size = 2)]
-//! enum TaggedEnum {
-//!     #[silkroad(when = "tag < 100")]
-//!     A {
-//!         #[silkroad(tag)]
-//!         value: u16,
-//!     },
-//!     #[silkroad(when = "tag >= 100")]
-//!     B {
-//!         #[silkroad(tag)]
-//!         value: u16,
-//!     },
+//! enum Hello {
+//!     #[silkroad(value = 0x400d)]
+//!     Client(String),
+//!     #[silkroad(value = 0x400e)]
+//!     Server(String),
 //! }
 //! ```
 //!
-//! When deserializing, the tag value is read first, and then the condition is
-//! evaluated to determine which variant to use. The tag value is also available
-//! for use in the variant's fields, so you can use it to fill in the value of
-//! the variant.
+//! A nonzero-width enum may instead select every variant with an ordered
+//! `when` predicate over `tag`. Every variant must contain exactly one
+//! `#[silkroad(tag)]` field whose type exactly matches the selected unsigned
+//! discriminant type. That field aliases the discriminant: it is written,
+//! read, and counted once rather than also appearing in the variant body.
+//! Serialization verifies that the Rust variant is the first matching
+//! predicate, preserving round trips when predicates overlap.
+//!
+//! ```ignore
+//! #[derive(Serialize, Deserialize, ByteSize)]
+//! #[silkroad(size = 2)]
+//! enum Tagged {
+//!     #[silkroad(when = "tag < 100")]
+//!     Small { #[silkroad(tag)] tag: u16 },
+//!     #[silkroad(when = "tag >= 100")]
+//!     Large { #[silkroad(tag)] tag: u16 },
+//! }
+//! ```
+//!
+//! `#[silkroad(size = 0)]` creates a context-selected enum with no
+//! discriminant. Every variant must use an ordered `when` expression based on
+//! `ctx` or external paths; `value`, `tag`, and variant-field references are
+//! unavailable. Serialization again requires the selected Rust variant to be
+//! the first matching predicate, and deserialization errors if none match.
 
 use crate::deserialize::deserialize;
 use crate::model::{DeriveOperation, normalize};

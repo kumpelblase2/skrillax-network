@@ -1,0 +1,5 @@
+error: Expression for this field references `enabled`, which is not available until this or a later field is decoded.
+ --> tests/ui/later_field_expression.rs:6:5
+  |
+6 |     #[silkroad(when = "enabled")]
+  |     ^

@@ -1,0 +1,5 @@
+error: Bare Option fields with `size = 0` require a `when` condition for Deserialize.
+ --> tests/ui/bare_option_deserialize.rs:6:5
+  |
+6 |     #[silkroad(size = 0)]
+  |     ^

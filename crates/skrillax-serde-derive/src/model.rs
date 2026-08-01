@@ -1,7 +1,9 @@
 use darling::{FromAttributes, FromDeriveInput};
 use proc_macro2::{Ident, Span};
 use proc_macro2_diagnostics::{Diagnostic, SpanDiagnosticExt};
+use std::collections::HashSet;
 use syn::spanned::Spanned;
+use syn::visit::Visit;
 use syn::{
     Data, DataEnum, DataStruct, DeriveInput, Expr, Field, GenericArgument, PathArguments, Type,
     Variant,
@@ -89,7 +91,6 @@ pub(crate) enum WireType<'a> {
     String,
     Array {
         element_type: &'a Type,
-        element: Box<WireType<'a>>,
         length: &'a Expr,
     },
     Collection {
@@ -182,6 +183,7 @@ pub(crate) fn normalize(
                 .iter()
                 .map(|field| normalize_field(field, operation, false, None))
                 .collect::<Result<Vec<_>, _>>()?;
+            validate_field_expression_order(&fields, operation)?;
             DataModel::Struct(StructModel { data, fields })
         },
         Data::Enum(data) => DataModel::Enum(normalize_enum(data, args.size, operation)?),
@@ -299,6 +301,11 @@ fn normalize_enum(
             }
         }
 
+        validate_field_expression_order(&fields, operation)?;
+        if let VariantSelector::Predicate(expression) = &selector {
+            validate_enum_predicate(expression, &fields, variant, width)?;
+        }
+
         variants.push(VariantModel {
             variant,
             fields,
@@ -363,6 +370,11 @@ fn normalize_field(
             .span()
             .error("`list_type` is only valid on collection fields."));
     }
+    if args.calculate.is_some() && is_option {
+        return Err(field.span().error(
+            "`calculate` is not valid on Option fields; use `when` for conditional presence.",
+        ));
+    }
     if args.calculate.is_some() && is_collection && args.list_type.as_deref() != Some("calculated")
     {
         return Err(field
@@ -403,7 +415,11 @@ fn normalize_field(
             let encoding = match args.size.unwrap_or(1) {
                 1 => StringEncoding::Utf8,
                 2 => StringEncoding::Utf16,
-                _ => return Err(field.span().error("Unknown String length")),
+                invalid => {
+                    return Err(field.span().error(format!(
+                        "Invalid String size {invalid}; expected 1 for UTF-8 or 2 for UTF-16."
+                    )));
+                },
             };
             (
                 Some(encoding),
@@ -522,7 +538,6 @@ fn classify_type(ty: &Type) -> Result<WireType<'_>, Diagnostic> {
     match ty {
         Type::Array(array) => Ok(WireType::Array {
             element_type: &array.elem,
-            element: Box::new(classify_type(&array.elem)?),
             length: &array.len,
         }),
         Type::Tuple(tuple) => {
@@ -563,13 +578,23 @@ fn classify_type(ty: &Type) -> Result<WireType<'_>, Diagnostic> {
                 "String" | "string::String" | "std::string::String"
             ) {
                 Ok(WireType::String)
-            } else if name == "Vec" {
+            } else if matches!(
+                name.as_str(),
+                "Vec" | "vec::Vec" | "std::vec::Vec" | "alloc::vec::Vec"
+            ) {
+                let element = classify_generic(path, "collection")?;
+                validate_container_inner(&element, path.span(), "collection")?;
                 Ok(WireType::Collection {
-                    element: Box::new(classify_generic(path, "collection")?),
+                    element: Box::new(element),
                 })
-            } else if name == "Option" {
+            } else if matches!(
+                name.as_str(),
+                "Option" | "option::Option" | "std::option::Option" | "core::option::Option"
+            ) {
+                let inner = classify_generic(path, "option")?;
+                validate_container_inner(&inner, path.span(), "option")?;
                 Ok(WireType::Optional {
-                    inner: Box::new(classify_generic(path, "option")?),
+                    inner: Box::new(inner),
                 })
             } else {
                 Ok(WireType::Delegated(ty))
@@ -610,6 +635,204 @@ fn classify_generic<'a>(path: &'a syn::TypePath, kind: &str) -> Result<WireType<
     classify_type(argument)
 }
 
+fn validate_container_inner(
+    kind: &WireType<'_>,
+    span: Span,
+    outer: &str,
+) -> Result<(), Diagnostic> {
+    if matches!(
+        kind,
+        WireType::Collection { .. } | WireType::Optional { .. } | WireType::Tuple(_)
+    ) {
+        let article = if outer == "option" { "An" } else { "A" };
+        return Err(span.error(format!(
+            "{article} {outer} cannot directly contain a collection, Option, or tuple; use a \
+             wrapper struct with explicit wire attributes instead."
+        )));
+    }
+    Ok(())
+}
+
+fn validate_field_expression_order(
+    fields: &[FieldModel<'_>],
+    operation: DeriveOperation,
+) -> Result<(), Diagnostic> {
+    if !matches!(operation, DeriveOperation::Deserialize) {
+        return Ok(());
+    }
+
+    let positions = fields
+        .iter()
+        .enumerate()
+        .filter_map(|(index, field)| {
+            field
+                .field
+                .ident
+                .as_ref()
+                .map(|ident| (ident.to_string(), index))
+        })
+        .collect::<Vec<_>>();
+
+    for (index, field) in fields.iter().enumerate() {
+        for expression in field_expressions(field) {
+            let paths = free_single_segment_paths(expression);
+            if let Some((name, _)) = positions
+                .iter()
+                .find(|(name, position)| *position >= index && paths.contains(name))
+            {
+                return Err(field.field.span().error(format!(
+                    "Expression for this field references `{name}`, which is not available until \
+                     this or a later field is decoded."
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_enum_predicate(
+    expression: &Expr,
+    fields: &[FieldModel<'_>],
+    variant: &Variant,
+    width: Option<IntegerWidth>,
+) -> Result<(), Diagnostic> {
+    let paths = free_single_segment_paths(expression);
+    if width.is_none() && paths.contains("tag") {
+        return Err(variant.span().error(
+            "Zero-width enum predicates cannot reference `tag`; only `ctx` and external paths are \
+             available.",
+        ));
+    }
+    if let Some(name) = fields
+        .iter()
+        .filter_map(|field| field.field.ident.as_ref())
+        .map(ToString::to_string)
+        .find(|name| name.as_str() != "tag" && paths.contains(name))
+    {
+        return Err(variant.span().error(format!(
+            "Enum predicate cannot reference variant body field `{name}`; only `tag`, `ctx`, and \
+             external paths are available."
+        )));
+    }
+    Ok(())
+}
+
+fn field_expressions<'a>(field: &'a FieldModel<'_>) -> Vec<&'a Expr> {
+    let mut expressions = Vec::new();
+    if let FieldRole::Synthetic { expression } = &field.role {
+        expressions.push(expression);
+    }
+    if let Some(SequenceFraming::Calculated { expression }) = &field.framing {
+        expressions.push(expression);
+    }
+    if let Some(Presence::Conditional { expression }) = &field.presence {
+        expressions.push(expression);
+    }
+    expressions
+}
+
+#[derive(Default)]
+struct PatternIdentifiers(HashSet<String>);
+
+impl<'ast> Visit<'ast> for PatternIdentifiers {
+    fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+        self.0.insert(pattern.ident.to_string());
+        syn::visit::visit_pat_ident(self, pattern);
+    }
+}
+
+fn pattern_identifiers(pattern: &syn::Pat) -> HashSet<String> {
+    let mut identifiers = PatternIdentifiers::default();
+    identifiers.visit_pat(pattern);
+    identifiers.0
+}
+
+#[derive(Default)]
+struct FreePaths {
+    paths: HashSet<String>,
+    scopes: Vec<HashSet<String>>,
+}
+
+impl FreePaths {
+    fn is_bound(&self, ident: &Ident) -> bool {
+        let name = ident.to_string();
+        self.scopes.iter().rev().any(|scope| scope.contains(&name))
+    }
+}
+
+impl<'ast> Visit<'ast> for FreePaths {
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        if path.qself.is_none()
+            && path.path.leading_colon.is_none()
+            && path.path.segments.len() == 1
+            && !self.is_bound(&path.path.segments[0].ident)
+        {
+            self.paths.insert(path.path.segments[0].ident.to_string());
+        }
+        syn::visit::visit_expr_path(self, path);
+    }
+
+    fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
+        let bindings = closure
+            .inputs
+            .iter()
+            .flat_map(pattern_identifiers)
+            .collect::<HashSet<_>>();
+        self.scopes.push(bindings);
+        self.visit_expr(&closure.body);
+        self.scopes.pop();
+    }
+
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        self.scopes.push(HashSet::new());
+        for statement in &block.stmts {
+            match statement {
+                syn::Stmt::Local(local) => {
+                    if let Some(initializer) = &local.init {
+                        self.visit_expr(&initializer.expr);
+                        if let Some((_, diverge)) = &initializer.diverge {
+                            self.visit_expr(diverge);
+                        }
+                    }
+                    let bindings = pattern_identifiers(&local.pat);
+                    self.scopes
+                        .last_mut()
+                        .expect("block scope exists")
+                        .extend(bindings);
+                },
+                syn::Stmt::Expr(expression, _) => self.visit_expr(expression),
+                syn::Stmt::Item(_) | syn::Stmt::Macro(_) => {},
+            }
+        }
+        self.scopes.pop();
+    }
+
+    fn visit_expr_match(&mut self, expression: &'ast syn::ExprMatch) {
+        self.visit_expr(&expression.expr);
+        for arm in &expression.arms {
+            self.scopes.push(pattern_identifiers(&arm.pat));
+            if let Some((_, guard)) = &arm.guard {
+                self.visit_expr(guard);
+            }
+            self.visit_expr(&arm.body);
+            self.scopes.pop();
+        }
+    }
+
+    fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
+        self.visit_expr(&expression.expr);
+        self.scopes.push(pattern_identifiers(&expression.pat));
+        self.visit_block(&expression.body);
+        self.scopes.pop();
+    }
+}
+
+fn free_single_segment_paths(expression: &Expr) -> HashSet<String> {
+    let mut paths = FreePaths::default();
+    paths.visit_expr(expression);
+    paths.paths
+}
+
 fn parse_attrs(attrs: &[syn::Attribute], span: Span, kind: &str) -> Result<FieldArgs, Diagnostic> {
     FieldArgs::from_attributes(attrs)
         .map_err(|_| span.error(format!("Could not parse {kind} attributes.")))
@@ -633,7 +856,27 @@ fn integer_width(size: usize, span: Span, kind: &str) -> Result<IntegerWidth, Di
 
 fn is_unsigned_primitive(ty: &Type, expected: IntegerWidth) -> bool {
     let Type::Path(path) = ty else { return false };
-    path.path.segments.last().is_some_and(|segment| {
-        segment.ident == expected.rust_type() && matches!(segment.arguments, PathArguments::None)
-    })
+    if path.qself.is_some()
+        || path
+            .path
+            .segments
+            .iter()
+            .any(|segment| !matches!(segment.arguments, PathArguments::None))
+    {
+        return false;
+    }
+
+    let segments = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    let primitive = expected.rust_type();
+    (path.path.leading_colon.is_none()
+        && matches!(segments.as_slice(), [name] if name == primitive))
+        || matches!(segments.as_slice(), [root, kind, name]
+            if matches!(root.as_str(), "core" | "std")
+                && kind == "primitive"
+                && name == primitive)
 }

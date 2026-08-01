@@ -35,6 +35,8 @@ pub enum OutStreamError {
     /// be built, but no encryption has been configured.
     #[error("Error occurred when trying to create frames")]
     Framing(#[from] FramingError),
+    /// Packet construction failed, including serialization errors. This occurs
+    /// before the packet is framed or written to the transport.
     #[error("An error occurred at the packet level")]
     PacketError(#[from] PacketError),
     #[error("Opcode {0} was not registered.")]
@@ -315,6 +317,11 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
         Ok(())
     }
 
+    /// Serializes, frames, and sends a registered packet.
+    ///
+    /// Packet serialization failures are returned as
+    /// [OutStreamError::PacketError]. In that case packet framing is not
+    /// attempted and no bytes are written to the transport.
     pub async fn write_packet<S: Into<DynamicPacket>>(
         &mut self,
         packet: S,
@@ -559,7 +566,9 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use skrillax_serde::{ByteSize, Deserialize, Serialize};
+    use bytes::BytesMut;
+    use skrillax_serde::{ByteSize, Deserialize, SerializationError, Serialize};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Copy, Clone, Default)]
     struct CustomFlag(u8);
@@ -567,6 +576,44 @@ mod test {
     #[derive(Packet, Deserialize, Serialize, ByteSize)]
     #[packet(opcode = 0x0042)]
     struct Empty;
+
+    struct FailingPacket;
+
+    impl Packet for FailingPacket {
+        const ID: u16 = 0x0044;
+        const NAME: &'static str = "FailingPacket";
+        const MASSIVE: bool = false;
+        const ENCRYPTED: bool = false;
+    }
+
+    impl ByteSize for FailingPacket {
+        fn byte_size(&self) -> usize {
+            0
+        }
+    }
+
+    impl Serialize for FailingPacket {
+        fn write_to(
+            &self,
+            _writer: &mut BytesMut,
+            _ctx: &SerdeContext,
+        ) -> Result<(), SerializationError> {
+            Err(SerializationError::NoMatchingVariant {
+                enum_name: "FailingPacket",
+            })
+        }
+    }
+
+    fn assert_failing_packet_error(error: OutStreamError) {
+        assert!(matches!(
+            error,
+            OutStreamError::PacketError(PacketError::SerializationError(
+                SerializationError::NoMatchingVariant {
+                    enum_name: "FailingPacket"
+                }
+            ))
+        ));
+    }
 
     #[derive(Packet, Deserialize, Serialize, ByteSize)]
     #[packet(opcode = 0x0043)]
@@ -612,6 +659,49 @@ mod test {
         drop(writer);
         let content: &[u8] = &buffer;
         assert_eq!(&[0x00u8, 0x00, 0x42, 0x00, 0x00, 0x00], content);
+    }
+
+    #[test]
+    fn packet_registry_encode_preserves_serialization_failure() {
+        let registry = PacketRegistry::builder()
+            .register_outgoing::<FailingPacket>()
+            .build();
+
+        let error = registry
+            .encode(
+                FailingPacket::ID,
+                FailingPacket.into(),
+                &SerdeContext::default(),
+            )
+            .expect_err("packet construction should fail");
+
+        assert_failing_packet_error(error);
+    }
+
+    #[tokio::test]
+    async fn write_packet_emits_nothing_after_serialization_failure() {
+        let mut buffer = Vec::new();
+        let registry = PacketRegistry::builder()
+            .register_outgoing::<FailingPacket>()
+            .build();
+        let mut writer = SilkroadStreamWrite::new(
+            FramedWrite::new(&mut buffer, SilkroadCodec),
+            registry,
+            SharedState::new(),
+        );
+        let frame_callback_called = Arc::new(AtomicBool::new(false));
+        let callback_state = Arc::clone(&frame_callback_called);
+        writer.on_before_write(move |_, _| callback_state.store(true, Ordering::SeqCst));
+
+        let error = writer
+            .write_packet(FailingPacket)
+            .await
+            .expect_err("packet construction should fail");
+
+        assert_failing_packet_error(error);
+        assert!(!frame_callback_called.load(Ordering::SeqCst));
+        drop(writer);
+        assert!(buffer.is_empty());
     }
 
     #[tokio::test]

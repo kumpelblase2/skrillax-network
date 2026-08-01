@@ -1,10 +1,11 @@
 //! `skrillax-serde` provides definitions for serialization/deserialization of
 //! data structures used in Silkroad Online.
 //!
-//! Generally, you won't be implementing the traits provided here, but will be
-//! automatically deriving these instead. We provide three traits: [Serialize],
-//! [Deserialize], and [ByteSize], for serializing, deserializing, and
-//! estimating the size respectively.
+//! Generally, you won't implement the traits provided here manually, but will
+//! derive them instead. [Serialize] writes a value fallibly, [Deserialize]
+//! reads it, and [ByteSize] reports the exact wire size of a well-formed value.
+//! `ByteSize` is infallible and non-validating; see its contract before using
+//! it for allocation.
 
 pub mod error;
 mod time;
@@ -117,25 +118,29 @@ impl Default for SerdeContext {
     }
 }
 
-/// The `Serialize` trait allows an item to be serialized into a binary
-/// representation of itself, which may then be used to send it off over
-/// the network. This trait requires the [ByteSize] trait to also be
-/// present in order to pre-allocate the necessary amount of space for
-/// the serialized data.
+/// Fallibly serializes a value into its Silkroad wire representation.
 ///
-/// `Serialize` only provides one method: [Serialize::write_to]. This
-/// method is used to serialize the data and write it into the given
-/// buffer. This buffer may already contain data unrelated to this item
-/// and may have more space available for more items to follow. However,
-/// it is always at least the size provided by [ByteSize].
+/// Implementations validate representability and value-dependent wire
+/// invariants while writing. A failure is not atomic: bytes written before the
+/// error remain in the destination. Callers that reuse a buffer and require
+/// rollback should record its original length and truncate it on error.
+///
+/// This trait requires [ByteSize] for allocation. `byte_size()` is exact for
+/// well-formed values, but is not validation and does not guarantee that an
+/// ill-formed value will serialize successfully.
 pub trait Serialize: ByteSize {
-    /// Writes all bytes representing the content of the struct to the writer
-    /// output.
+    /// Appends this value's wire bytes to `writer` using `ctx`.
+    ///
+    /// This method does not reserve space. It may return an error after earlier
+    /// fields or nested values have already appended bytes.
     fn write_to(&self, writer: &mut BytesMut, ctx: &SerdeContext)
     -> Result<(), SerializationError>;
 
-    /// Convenience around [self.write_to] which already reserves the necessary
-    /// space.
+    /// Reserves `self.byte_size()` bytes, then calls [Serialize::write_to].
+    ///
+    /// Reservation happens before serialization and may therefore overallocate
+    /// when an ill-formed value subsequently returns an error. Existing and
+    /// partially written bytes are not rolled back.
     fn write_to_end(
         &self,
         writer: &mut BytesMut,
@@ -146,16 +151,16 @@ pub trait Serialize: ByteSize {
     }
 }
 
-/// `Deserialize` allows an item to be created from a binary representation.
-/// Given that there are many different ways such a conversion may fail, this
-/// operation will always yield a [Result]. It is not even sure that there
-/// are enough bytes available to be read for the deserialization of this
-/// item to be completed successfully.
+/// Creates a value from its Silkroad wire representation.
+///
+/// Deserialization is fallible because input may be truncated, malformed, or
+/// inconsistent with the supplied [SerdeContext]. On success, an implementation
+/// consumes exactly the bytes belonging to one value and leaves trailing bytes
+/// in the reader untouched.
 pub trait Deserialize {
-    /// Tries to read the data contained in `reader` to create and instance of
-    /// `Self`.
+    /// Reads one `Self` from `reader` using `ctx`.
     ///
-    /// May return an error if the data did not match the expected format.
+    /// Returns an error when the input does not match the expected wire format.
     fn read_from<T: Read + ReadBytesExt>(
         reader: &mut T,
         ctx: &SerdeContext,
@@ -165,16 +170,21 @@ pub trait Deserialize {
     // does.
 }
 
-/// An item having a [ByteSize] implementation specifies it has a known
-/// size, independent of if it's [Sized] or not. The size reported by
-/// [ByteSize] may sometimes not be the same as [size_of], as
-/// alignment should not be taken into account for [ByteSize]. The size returned
-/// should not be taken as an exact value, though it should always match
-/// the final size. Assume this to be a good estimate instead.
+/// Reports a value's wire size without validation.
+///
+/// For every well-formed value and matching [SerdeContext], this size is
+/// exactly the number of bytes emitted by [Serialize]. It excludes Rust layout
+/// padding and may differ from [`std::mem::size_of`].
+///
+/// `ByteSize` is deliberately infallible and context-free. For an ill-formed
+/// value that serialization would reject, its result is not guaranteed to be
+/// useful or authoritative. Callers may use it for allocation, but must not use
+/// it as validation.
 pub trait ByteSize {
-    /// Given the current element, provides the number of bytes necessary to
-    /// represent this element. This should never error and instead return a
-    /// size of 0.
+    /// Returns the serialized byte count for a well-formed value.
+    ///
+    /// Implementations must not panic merely because a protocol length cannot
+    /// fit its configured prefix; that check belongs to [Serialize].
     fn byte_size(&self) -> usize;
 }
 
@@ -244,6 +254,42 @@ implement_primitive!(u64, read_u64);
 implement_primitive!(i64, read_i64);
 implement_primitive!(f32, read_f32);
 implement_primitive!(f64, read_f64);
+
+impl<T: ByteSize, const N: usize> ByteSize for [T; N] {
+    fn byte_size(&self) -> usize {
+        self.iter().map(ByteSize::byte_size).sum()
+    }
+}
+
+impl<T: Serialize, const N: usize> Serialize for [T; N] {
+    fn write_to(
+        &self,
+        writer: &mut BytesMut,
+        ctx: &SerdeContext,
+    ) -> Result<(), SerializationError> {
+        for element in self {
+            element.write_to(writer, ctx)?;
+        }
+        Ok(())
+    }
+}
+
+impl<T: Deserialize, const N: usize> Deserialize for [T; N] {
+    fn read_from<R: Read + ReadBytesExt>(
+        reader: &mut R,
+        ctx: &SerdeContext,
+    ) -> Result<Self, SerializationError> {
+        let mut elements = Vec::with_capacity(N);
+        for _ in 0..N {
+            elements.push(T::read_from(reader, ctx)?);
+        }
+
+        match elements.try_into() {
+            Ok(array) => Ok(array),
+            Err(_) => unreachable!("exactly N array elements were deserialized"),
+        }
+    }
+}
 
 #[cfg(test)]
 mod test {
@@ -330,6 +376,64 @@ mod test {
         assert_eq!(8, 1u64.byte_size());
         assert_eq!(4, 1.1f32.byte_size());
         assert_eq!(8, 1.1f64.byte_size());
+    }
+
+    #[test]
+    fn zero_length_array_has_no_wire_bytes() {
+        let array: [u8; 0] = [];
+        let context = SerdeContext::default();
+        let mut buffer = BytesMut::new();
+
+        array.write_to(&mut buffer, &context).unwrap();
+
+        assert_eq!(array.byte_size(), 0);
+        assert!(buffer.is_empty());
+
+        let mut reader = [0xAA].as_slice();
+        let decoded = <[u8; 0]>::read_from(&mut reader, &context).unwrap();
+        assert_eq!(decoded, array);
+        assert_eq!(reader, &[0xAA]);
+    }
+
+    #[test]
+    fn u16_array_uses_exact_little_endian_bytes_and_summed_size() {
+        let array = [0x1234u16, 0xABCD];
+        let context = SerdeContext::default();
+        let mut buffer = BytesMut::new();
+
+        array.write_to(&mut buffer, &context).unwrap();
+
+        assert_eq!(array.byte_size(), 4);
+        assert_eq!(buffer.as_ref(), &[0x34, 0x12, 0xCD, 0xAB]);
+    }
+
+    #[test]
+    fn array_round_trip_consumes_exactly_its_elements() {
+        let array = [1u16, 258, u16::MAX];
+        let context = SerdeContext::default();
+        let mut buffer = BytesMut::new();
+        array.write_to(&mut buffer, &context).unwrap();
+        buffer.extend_from_slice(&[0xAA]);
+        let mut reader = buffer.as_ref();
+
+        let decoded = <[u16; 3]>::read_from(&mut reader, &context).unwrap();
+
+        assert_eq!(decoded, array);
+        assert_eq!(reader, &[0xAA]);
+    }
+
+    #[test]
+    fn truncated_array_deserialization_returns_io_error() {
+        let context = SerdeContext::default();
+        let mut reader = [0x34, 0x12, 0x56].as_slice();
+
+        let error = <[u16; 2]>::read_from(&mut reader, &context).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SerializationError::IoError(error)
+                if error.kind() == std::io::ErrorKind::UnexpectedEof
+        ));
     }
 
     #[test]

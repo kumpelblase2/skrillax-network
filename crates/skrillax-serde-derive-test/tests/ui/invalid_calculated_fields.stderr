@@ -1,0 +1,23 @@
+error: Missing `calculate` attribute for collection of size `calculated`.
+ --> tests/ui/invalid_calculated_fields.rs:6:5
+  |
+6 |     #[silkroad(list_type = "calculated")]
+  |     ^
+
+error: A collection `calculate` expression requires `list_type = "calculated"`.
+  --> tests/ui/invalid_calculated_fields.rs:12:5
+   |
+12 |     #[silkroad(calculate = "count")]
+   |     ^
+
+error: A calculated collection cannot use `size`; it has no local prefix.
+  --> tests/ui/invalid_calculated_fields.rs:20:5
+   |
+20 |     #[silkroad(list_type = "calculated", calculate = "count", size = 1)]
+   |     ^
+
+error: A calculated scalar field cannot use `tag`, `list_type`, or `size`.
+  --> tests/ui/invalid_calculated_fields.rs:26:5
+   |
+26 |     #[silkroad(calculate = "1", size = 1)]
+   |     ^

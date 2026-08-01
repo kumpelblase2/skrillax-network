@@ -3,48 +3,107 @@
 [![Crates.io](https://img.shields.io/crates/v/skrillax-serde.svg)](https://crates.io/crates/skrillax-serde)
 [![Docs.rs](https://docs.rs/skrillax-serde/badge.svg)](https://docs.rs/skrillax-serde)
 
-[serde](https://serde.rs/) is a well known and respected serialization and deserialization framework for Rust. And
-while we _could_ make it work for our context, Silkroad is unfortunately a little annoying in a few respects, which
-would make working with `serde` a little cumbersome. Thus, this provides a more focused approach to
-serialization/deserialization in the Silkroad context.
+Silkroad packets are not self-describing and use several field-specific framing
+schemes. Although general-purpose [Serde](https://serde.rs/) can represent these
+formats, doing so requires protocol-specific serializer hooks throughout packet
+definitions. `skrillax-serde` instead provides focused `Serialize`,
+`Deserialize`, and `ByteSize` traits plus optional derive macros whose
+`#[silkroad(...)]` attributes describe the wire format directly.
 
-Silkroad does a few things that make it hard to generally serialize the packets:
+The core crate implements the traits for primitives, time values, and generic
+fixed-size arrays. Enable the `derive` feature to re-export the macros from
+[`skrillax-serde-derive`](../skrillax-serde-derive/README.md).
 
-- They're not self describing - which is, however, expected
-- Lists can be represented in different ways, depending on the specific operation
-- Attributes may appear or be hidden depending on previous values
-- Attributes may appear or be hidden depending on external information
+## Wire format
 
-For example, there are three types if list representations in Silkroad: Length based, Break based, or Continue based.
-The first is quite obvious; a length is prepended and then all elements follow without any separator. "Break based"
-and "Continue based" are similar in that there's a separator in between each element which differs on the last
-element. Both use `1` as the separator, but will use `2` or `0` as the end element, respectively. Why do you need
-multiple ways to encode a list of values? I don't know. Other weirdness includes some strings using wide character
-(2 byte) encoding or the content completely changing depending on what type of item it belongs to.
+Fields are encoded consecutively in declaration order, generally in
+little-endian byte order. There are no implicit separators.
 
-This is not impossible to implement with serde, in fact, the implementation would be easy, but would be more
-exhausting to use given you'd have to constantly reach for `deserialize_with` and remembering the exact function that
-does what you want. Especially once you have to serialize/deserialize a field that depends on a previous field,
-you're going to have a hard time (Example: a `ChatMessage` packet has an optional field that depends on the type of
-message which has been encoded in a previous, non-adjacent field). To make it easier to work with and make these quirks
-"implementable", this custom 'serde' exists.
+- Primitive integers and floating-point values use their fixed wire width.
+- `[T; N]` has no prefix and concatenates exactly `N` elements.
+- A `String` has a little-endian `u16` prefix. UTF-8 strings count payload bytes;
+  UTF-16LE strings count UTF-16 code units, not Rust UTF-8 bytes.
+- A counted `Vec<T>` prefixes its element count. `size = 1`, `2`, `4`, or `8`
+  selects `u8`, `u16`, `u32`, or `u64`.
+- Sentinel collections write a marker before each element and a terminal marker.
+  `break` uses `1`/`2`, while `has-more` uses `1`/`0`. Markers honor the same
+  configured widths.
+- A calculated collection gets its count from another field or `SerdeContext`
+  and writes no collection-local prefix.
+- `Option<T>` normally uses a configurable-width `0`/`1` marker. Conditional
+  options use `when` and no marker. A bare `size = 0` option is supported only
+  for `Serialize` and `ByteSize`, because it cannot be decoded unambiguously.
+- Enum discriminants support widths `1`, `2`, `4`, and `8`. Predicate-tagged
+  enum fields alias that discriminant and are emitted and counted only once.
+  A zero-width enum selects a variant from context and emits no discriminant.
 
-## Silkroad Operation Serialization/Deserialization
+See the derive crate's
+[module documentation](https://docs.rs/skrillax-serde-derive/latest/skrillax_serde_derive/)
+for the complete attribute rules, calculated fields, enum predicates, and
+supported nesting.
 
-Most of the serialization/deserialization logic is implemented in the [`-derive`](../skrillax-serde-derive/README.md)
-crate. This crate only includes ser/de definitions for primitive values, such as time, `u8` and the like. However,
-I'd like to explain the basics of how data is serialized - in general - in the Silkroad world.
+## Serialization contract
 
-Let's begin with the basics: Silkroad encodes data (mostly) in little endian byte order, so a packet length of `256`,
-which is a `u16`, will show up as `0x00 0x01` instead of `0x01 0x00`. There are no separators between data fields,
-so values are present directly adjacent to each other. If you have three fields of varying size, the serialized size
-will always match the total space the fields would use up in memory. Arrays of constant length also encode only the
-data it contains (the number of elements is know and so is the size of each element). Varying length lists (or in
-Rust terms: `Vec`s) have, as previously mentioned, three different ways of being encoded. Either the length is
-prepended, which is usually of size `u8`, but may also be `u16`, and then all elements will follow without any
-further separators. Alternatively, a `u8` is used to show if there's more (with a value of `1`) followed by the next
-element or if it's the end with either `0` or a `2`, depending on where it's used. Enum-like elements (for example,
-error codes or, generally, different variants of something) often contain a "variant id" denoted as a `u8`, followed
-by the specific fields for that variant. As such, variants that don't contain any data would only have the variant
-id and nothing else. Lastly, there are optional fields, which contain a `u8` specifying if data is present (value of
-`1`) or no data (value of `0`). Everything else uses any combination of the previously defined atoms.
+`Serialize::write_to` and `write_to_end` return
+`Result<(), SerializationError>`. Derived serializers reject lengths that do
+not fit configured prefixes and value/context combinations that would not round
+trip. Nested serialization errors are propagated.
+
+Validation occurs as fields are written. If a later field fails, bytes already
+written remain in the `BytesMut`; serialization is deliberately not atomic. A
+fresh packet buffer can simply be discarded. Callers reusing a shared buffer can
+provide transactional behavior themselves:
+
+```rust
+use bytes::BytesMut;
+use skrillax_serde::{SerdeContext, Serialize};
+
+fn append<T: Serialize>(
+    value: &T,
+    output: &mut BytesMut,
+    context: &SerdeContext,
+) -> Result<(), skrillax_serde::SerializationError> {
+    let original_len = output.len();
+    if let Err(error) = value.write_to(output, context) {
+        output.truncate(original_len);
+        return Err(error);
+    }
+    Ok(())
+}
+```
+
+`write_to_end` reserves `byte_size()` bytes before serialization. Reservation
+can overallocate when an ill-formed value later fails; it is not validation.
+
+## `ByteSize` contract
+
+`ByteSize::byte_size()` is infallible and context-free. For every well-formed
+value and matching context, it exactly equals the number of bytes emitted by
+`Serialize`. It is an allocation estimate only: for an ill-formed value that
+serialization would reject, the result is not guaranteed to be useful or
+authoritative and callers must not treat it as validation.
+
+## Migration from the infallible API
+
+Serialization and packet construction are now fallible:
+
+```rust
+use bytes::{Bytes, BytesMut};
+use skrillax_serde::{ByteSize, SerdeContext, Serialize};
+
+# #[derive(ByteSize, Serialize)]
+# struct MyPacket(u8);
+# fn example(packet: MyPacket) -> Result<(), skrillax_serde::SerializationError> {
+let bytes = Bytes::try_from(packet)?;
+
+let mut output = BytesMut::new();
+1u16.write_to_end(&mut output, &SerdeContext::default())?;
+# Ok(())
+# }
+```
+
+Replace `Bytes::from(value)` or conversions through `Into<Bytes>` with
+`Bytes::try_from(value)`/`TryInto`. Manual `Serialize` implementations must
+return `Result<(), SerializationError>` and propagate nested writes with `?`.
+At the packet layer, `AsPacket::as_packet` also returns a `Result`; stream APIs
+surface failures as `OutStreamError::PacketError` before sending frames.

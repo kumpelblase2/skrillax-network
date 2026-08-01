@@ -1,0 +1,65 @@
+error: Predicate-tagged variants require exactly one field marked with `tag`.
+ --> tests/ui/invalid_enum_contracts.rs:7:5
+  |
+7 |     #[silkroad(when = "tag == 1")]
+  |     ^
+
+error: Tag field must have type u16 for a 2-byte enum discriminant.
+  --> tests/ui/invalid_enum_contracts.rs:15:11
+   |
+15 |     Value(#[silkroad(tag)] u8),
+   |           ^
+
+error: Tag field must have type u8 for a 1-byte enum discriminant.
+  --> tests/ui/invalid_enum_contracts.rs:26:11
+   |
+26 |     Value(#[silkroad(tag)] protocol::u8),
+   |           ^
+
+error: A variant cannot use both `value` and `when`.
+  --> tests/ui/invalid_enum_contracts.rs:31:5
+   |
+31 |     #[silkroad(value = 1, when = "tag == 1")]
+   |     ^
+
+error: Variant value 256 does not fit in a 1-byte discriminant.
+  --> tests/ui/invalid_enum_contracts.rs:37:5
+   |
+37 |     #[silkroad(value = 256)]
+   |     ^
+
+error: Duplicate fixed variant value 1.
+  --> tests/ui/invalid_enum_contracts.rs:45:5
+   |
+45 |     #[silkroad(value = 1)]
+   |     ^
+
+error: An enum must use fixed `value` selectors or predicate `when` selectors consistently.
+  --> tests/ui/invalid_enum_contracts.rs:50:1
+   |
+50 | enum MixedSelectors {
+   | ^^^^
+
+error: Missing condition for enum variant.
+  --> tests/ui/invalid_enum_contracts.rs:60:5
+   |
+60 |     Value,
+   |     ^^^^^
+
+error: Zero-width enum variants cannot use `value`; use `when` instead.
+  --> tests/ui/invalid_enum_contracts.rs:66:5
+   |
+66 |     #[silkroad(value = 1)]
+   |     ^
+
+error: Zero-width enum variants cannot use field-level `tag`.
+  --> tests/ui/invalid_enum_contracts.rs:73:5
+   |
+73 |     #[silkroad(when = "true")]
+   |     ^
+
+error: Zero-width enum predicates cannot reference `tag`; only `ctx` and external paths are available.
+  --> tests/ui/invalid_enum_contracts.rs:80:5
+   |
+80 |     #[silkroad(when = "tag == 0")]
+   |     ^

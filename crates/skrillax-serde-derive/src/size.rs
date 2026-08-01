@@ -53,14 +53,15 @@ fn generate_size_for(
 
     match &field.kind {
         WireType::Delegated(_) => Ok(quote_spanned!(field.field.span() => #ident.byte_size())),
-        WireType::String => {
-            let multiplier: usize = match field.string_encoding.expect("strings have an encoding") {
-                StringEncoding::Utf8 => 1,
-                StringEncoding::Utf16 => 2,
-            };
-            Ok(quote_spanned! {field.field.span() => 2 + #ident.len() * #multiplier})
+        WireType::String => match field.string_encoding.expect("strings have an encoding") {
+            StringEncoding::Utf8 => {
+                Ok(quote_spanned! {field.field.span() => 2 + #ident.as_bytes().len()})
+            },
+            StringEncoding::Utf16 => {
+                Ok(quote_spanned! {field.field.span() => 2 + 2 * #ident.encode_utf16().count()})
+            },
         },
-        WireType::Array { .. } => generate_size_value(&field.kind, ident, field.field.span()),
+        WireType::Array { .. } => Ok(quote_spanned! {field.field.span() => #ident.byte_size()}),
         WireType::Collection { element } => {
             let inner = generate_size_value(element, quote!(elem), field.field.span())?;
             let body = quote!(#ident.iter().map(|elem| #inner).sum::<usize>());
@@ -110,11 +111,10 @@ fn generate_size_value(
     match kind {
         WireType::Delegated(_) => Ok(quote!(#ident.byte_size())),
         WireType::String => Ok(quote!(2 + #ident.len())),
-        WireType::Array { .. } => Ok(quote!(#ident.iter().map(ByteSize::byte_size).sum::<usize>())),
-        WireType::Collection { .. } | WireType::Optional { .. } => Err(span.error(
-            "Nested collections and options require a wrapper struct with explicit framing.",
-        )),
-        WireType::Tuple(_) => Err(span.error("Nested tuple values are not supported.")),
+        WireType::Array { .. } => Ok(quote!(#ident.byte_size())),
+        WireType::Collection { .. } | WireType::Optional { .. } | WireType::Tuple(_) => {
+            Err(span.error("Unsupported nested wire shape reached sizing after normalization."))
+        },
     }
 }
 

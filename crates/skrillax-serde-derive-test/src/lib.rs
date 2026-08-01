@@ -43,6 +43,9 @@ enum EnumWithNamedVec {
 }
 
 #[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct StringCollection(Vec<String>);
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
 struct TestCond {
     cond: u8,
     unrelated: String,
@@ -201,6 +204,15 @@ pub fn test_vec() {
 }
 
 #[test]
+pub fn test_string_collection() {
+    assert_round_trip(
+        StringCollection(vec!["é".into(), "ok".into()]),
+        &[2, 2, 0, 0xc3, 0xa9, 2, 0, b'o', b'k'],
+        &SerdeContext::default(),
+    );
+}
+
+#[test]
 pub fn test_cond() {
     test_serialize_deserialize!(
         TestCond,
@@ -267,6 +279,32 @@ pub fn test_tagged_enum() {
 }
 
 #[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+enum GappedPredicateEnum {
+    #[silkroad(when = "tag == 1")]
+    One {
+        #[silkroad(tag)]
+        tag: u8,
+    },
+    #[silkroad(when = "tag == 2")]
+    Two {
+        #[silkroad(tag)]
+        tag: u8,
+    },
+}
+
+#[test]
+fn predicate_enum_without_a_matching_tag_returns_a_typed_error() {
+    let error = GappedPredicateEnum::read_from(&mut Cursor::new([3]), &SerdeContext::default())
+        .expect_err("unmatched predicate tag must fail");
+    assert!(matches!(
+        error,
+        SerializationError::NoMatchingVariant {
+            enum_name: "GappedPredicateEnum"
+        }
+    ));
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
 #[silkroad(size = 2)]
 enum TaggedTupleEnum {
     #[silkroad(when = "tag < 100")]
@@ -282,4 +320,696 @@ pub fn test_tagged_tuple_enum() {
     test_serialize_deserialize!(TaggedTupleEnum, TaggedTupleEnum::A(50), &[50, 0]);
     test_serialize_deserialize!(TaggedTupleEnum, TaggedTupleEnum::B(150), &[150, 0]);
     test_serialize_deserialize!(TaggedTupleEnum, TaggedTupleEnum::C(1240), &[0xD8, 0x04]);
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct UnicodeStrings {
+    utf8: String,
+    #[silkroad(size = 2)]
+    utf16: String,
+    trailing: u8,
+}
+
+#[test]
+fn unicode_string_lengths_use_their_wire_units() {
+    assert_round_trip(
+        UnicodeStrings {
+            utf8: "é😀".into(),
+            utf16: "é😀".into(),
+            trailing: 0x7f,
+        },
+        &[
+            0x06, 0x00, 0xc3, 0xa9, 0xf0, 0x9f, 0x98, 0x80, // UTF-8 bytes
+            0x03, 0x00, 0xe9, 0x00, 0x3d, 0xd8, 0x00, 0xde, // UTF-16 units
+            0x7f,
+        ],
+        &SerdeContext::default(),
+    );
+}
+
+#[derive(Serialize, ByteSize)]
+struct OversizedString {
+    prefix: u8,
+    value: String,
+}
+
+#[test]
+fn oversized_string_fails_before_its_prefix_and_preserves_prior_output() {
+    let value = OversizedString {
+        prefix: 0x44,
+        value: "x".repeat(usize::from(u16::MAX) + 1),
+    };
+    let mut output = BytesMut::from(&b"keep"[..]);
+    let original = output.len();
+    let error = value
+        .write_to(&mut output, &SerdeContext::default())
+        .expect_err("oversized string must fail");
+    assert!(matches!(
+        error,
+        SerializationError::LengthOutOfRange {
+            field: "value",
+            actual: 65_536,
+            maximum: 65_535,
+            width: 2,
+        }
+    ));
+    assert_eq!(&output[..original], b"keep");
+    assert_eq!(&output[original..], &[0x44]);
+    output.truncate(original);
+    assert_eq!(output.as_ref(), b"keep");
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct CountedWidths {
+    #[silkroad(size = 1)]
+    one: Vec<u8>,
+    #[silkroad(size = 2)]
+    two: Vec<u8>,
+    #[silkroad(size = 4)]
+    four: Vec<u8>,
+    #[silkroad(size = 8)]
+    eight: Vec<u8>,
+}
+
+#[test]
+fn counted_collections_honor_all_integer_widths() {
+    assert_round_trip(
+        CountedWidths {
+            one: vec![1],
+            two: vec![2],
+            four: vec![3],
+            eight: vec![4],
+        },
+        &[
+            1, 1, // u8 count
+            1, 0, 2, // u16 count
+            1, 0, 0, 0, 3, // u32 count
+            1, 0, 0, 0, 0, 0, 0, 0, 4, // u64 count
+        ],
+        &SerdeContext::default(),
+    );
+}
+
+#[derive(Serialize, ByteSize)]
+struct CountOverflow {
+    prefix: u8,
+    #[silkroad(size = 1)]
+    values: Vec<u8>,
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct CountedU8(Vec<u8>);
+
+#[test]
+fn one_byte_count_accepts_its_maximum_value() {
+    let value = CountedU8(vec![0x5a; 255]);
+    let mut expected = vec![255];
+    expected.extend_from_slice(&value.0);
+    assert_round_trip(value, &expected, &SerdeContext::default());
+}
+
+#[test]
+fn counted_collection_overflow_is_typed_and_does_not_write_a_prefix() {
+    let value = CountOverflow {
+        prefix: 9,
+        values: vec![0; 256],
+    };
+    let mut output = BytesMut::new();
+    let error = value
+        .write_to(&mut output, &SerdeContext::default())
+        .expect_err("u8 count must overflow");
+    assert!(matches!(
+        error,
+        SerializationError::LengthOutOfRange {
+            field: "values",
+            actual: 256,
+            maximum: 255,
+            width: 1,
+        }
+    ));
+    assert_eq!(output.as_ref(), &[9]);
+
+    let error = bytes::Bytes::try_from(CountOverflow {
+        prefix: 9,
+        values: vec![0; 256],
+    })
+    .expect_err("generated TryFrom must preserve the serialization error");
+    assert!(matches!(
+        error,
+        SerializationError::LengthOutOfRange {
+            field: "values",
+            actual: 256,
+            maximum: 255,
+            width: 1,
+        }
+    ));
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct BreakSequence(#[silkroad(list_type = "break", size = 2)] Vec<u8>);
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct HasMoreSequence(#[silkroad(list_type = "has-more", size = 4)] Vec<u8>);
+
+#[test]
+fn sentinel_collections_honor_widths_and_terminal_markers() {
+    assert_round_trip(
+        BreakSequence(vec![7, 8]),
+        &[1, 0, 7, 1, 0, 8, 2, 0],
+        &SerdeContext::default(),
+    );
+    assert_round_trip(
+        HasMoreSequence(Vec::new()),
+        &[0, 0, 0, 0],
+        &SerdeContext::default(),
+    );
+}
+
+macro_rules! sentinel_type {
+    ($name:ident, $framing:literal, $width:literal) => {
+        #[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+        struct $name(#[silkroad(list_type = $framing, size = $width)] Vec<u8>);
+    };
+}
+
+sentinel_type!(Break1, "break", 1);
+sentinel_type!(Break4, "break", 4);
+sentinel_type!(Break8, "break", 8);
+sentinel_type!(HasMore1, "has-more", 1);
+sentinel_type!(HasMore2, "has-more", 2);
+sentinel_type!(HasMore8, "has-more", 8);
+
+#[test]
+fn both_sentinel_styles_support_every_marker_width() {
+    assert_round_trip(Break1(vec![9]), &[1, 9, 2], &SerdeContext::default());
+    assert_round_trip(
+        Break4(vec![9]),
+        &[1, 0, 0, 0, 9, 2, 0, 0, 0],
+        &SerdeContext::default(),
+    );
+    assert_round_trip(
+        Break8(vec![9]),
+        &[1, 0, 0, 0, 0, 0, 0, 0, 9, 2, 0, 0, 0, 0, 0, 0, 0],
+        &SerdeContext::default(),
+    );
+    assert_round_trip(HasMore1(vec![9]), &[1, 9, 0], &SerdeContext::default());
+    assert_round_trip(
+        HasMore2(vec![9]),
+        &[1, 0, 9, 0, 0],
+        &SerdeContext::default(),
+    );
+    assert_round_trip(
+        HasMore8(vec![9]),
+        &[1, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0],
+        &SerdeContext::default(),
+    );
+}
+
+#[test]
+fn invalid_collection_markers_are_rejected() {
+    let error = BreakSequence::read_from(&mut Cursor::new([3, 0]), &SerdeContext::default())
+        .expect_err("invalid break marker must fail");
+    assert!(matches!(
+        error,
+        SerializationError::InvalidSequenceMarker {
+            field: "t0",
+            value: 3
+        }
+    ));
+
+    let error =
+        HasMoreSequence::read_from(&mut Cursor::new([2, 0, 0, 0]), &SerdeContext::default())
+            .expect_err("invalid has-more marker must fail");
+    assert!(matches!(
+        error,
+        SerializationError::InvalidSequenceMarker {
+            field: "t0",
+            value: 2
+        }
+    ));
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct OptionWidths {
+    #[silkroad(size = 1)]
+    one: Option<u8>,
+    #[silkroad(size = 2)]
+    two: Option<u8>,
+    #[silkroad(size = 4)]
+    four: Option<u8>,
+    #[silkroad(size = 8)]
+    eight: Option<u8>,
+}
+
+#[test]
+fn options_honor_all_presence_widths() {
+    assert_round_trip(
+        OptionWidths {
+            one: None,
+            two: Some(2),
+            four: None,
+            eight: Some(8),
+        },
+        &[
+            0, // u8 None
+            1, 0, 2, // u16 Some
+            0, 0, 0, 0, // u32 None
+            1, 0, 0, 0, 0, 0, 0, 0, 8, // u64 Some
+        ],
+        &SerdeContext::default(),
+    );
+    assert_round_trip(
+        OptionWidths {
+            one: Some(1),
+            two: None,
+            four: Some(4),
+            eight: None,
+        },
+        &[
+            1, 1, // u8 Some
+            0, 0, // u16 None
+            1, 0, 0, 0, 4, // u32 Some
+            0, 0, 0, 0, 0, 0, 0, 0, // u64 None
+        ],
+        &SerdeContext::default(),
+    );
+}
+
+#[test]
+fn invalid_option_marker_is_rejected() {
+    let error = OptionWidths::read_from(&mut Cursor::new([2]), &SerdeContext::default())
+        .expect_err("invalid option marker must fail");
+    assert!(matches!(
+        error,
+        SerializationError::InvalidPresenceMarker {
+            field: "one",
+            value: 2
+        }
+    ));
+}
+
+#[test]
+fn conditional_option_state_must_match_its_condition() {
+    for value in [
+        TestCond {
+            cond: 1,
+            unrelated: String::new(),
+            value: None,
+        },
+        TestCond {
+            cond: 0,
+            unrelated: String::new(),
+            value: Some(1),
+        },
+    ] {
+        assert_serialization_error(&value, &SerdeContext::default(), |error| {
+            matches!(
+                error,
+                SerializationError::ConditionalPresenceMismatch { field: "value", .. }
+            )
+        });
+    }
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct ExplicitMarkerlessConditional {
+    enabled: bool,
+    #[silkroad(size = 0, when = "enabled")]
+    value: Option<u16>,
+}
+
+#[test]
+fn size_zero_with_when_is_a_decodable_conditional_option() {
+    assert_round_trip(
+        ExplicitMarkerlessConditional {
+            enabled: true,
+            value: Some(0x1234),
+        },
+        &[1, 0x34, 0x12],
+        &SerdeContext::default(),
+    );
+}
+
+#[derive(Serialize, ByteSize)]
+struct BareOption(#[silkroad(size = 0)] Option<u16>);
+
+#[test]
+fn bare_options_are_supported_for_serialize_and_size() {
+    let none = BareOption(None);
+    let some = BareOption(Some(0x1234));
+    assert_eq!(none.byte_size(), 0);
+    assert_eq!(some.byte_size(), 2);
+
+    let mut output = BytesMut::new();
+    none.write_to(&mut output, &SerdeContext::default())
+        .unwrap();
+    some.write_to(&mut output, &SerdeContext::default())
+        .unwrap();
+    assert_eq!(output.as_ref(), &[0x34, 0x12]);
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct CalculatedCollection {
+    count: i16,
+    #[silkroad(list_type = "calculated", calculate = "count")]
+    values: Vec<u8>,
+    trailing: u8,
+}
+
+#[test]
+fn calculated_collections_have_no_local_prefix() {
+    assert_round_trip(
+        CalculatedCollection {
+            count: 0,
+            values: Vec::new(),
+            trailing: 12,
+        },
+        &[0, 0, 12],
+        &SerdeContext::default(),
+    );
+    assert_round_trip(
+        CalculatedCollection {
+            count: 2,
+            values: vec![10, 11],
+            trailing: 12,
+        },
+        &[2, 0, 10, 11, 12],
+        &SerdeContext::default(),
+    );
+}
+
+#[test]
+fn calculated_collection_length_is_validated() {
+    assert_serialization_error(
+        &CalculatedCollection {
+            count: 1,
+            values: vec![1, 2],
+            trailing: 0,
+        },
+        &SerdeContext::default(),
+        |error| {
+            matches!(
+                error,
+                SerializationError::CalculatedLengthMismatch {
+                    field: "values",
+                    expected: 1,
+                    actual: 2
+                }
+            )
+        },
+    );
+    assert_serialization_error(
+        &CalculatedCollection {
+            count: -1,
+            values: Vec::new(),
+            trailing: 0,
+        },
+        &SerdeContext::default(),
+        |error| {
+            matches!(
+                error,
+                SerializationError::CalculatedLengthOutOfRange { field: "values" }
+            )
+        },
+    );
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct ContextCalculatedCollection(
+    #[silkroad(
+        list_type = "calculated",
+        calculate = "ctx.get::<usize>().unwrap_or(0)"
+    )]
+    Vec<u8>,
+);
+
+#[test]
+fn calculated_collection_expressions_can_use_context() {
+    let ctx = SerdeContext::default();
+    ctx.set(2usize);
+    let value = ContextCalculatedCollection(vec![5, 6]);
+    assert_eq!(value.byte_size(), 2);
+    let mut output = BytesMut::new();
+    value.write_to(&mut output, &ctx).unwrap();
+    assert_eq!(output.as_ref(), &[5, 6]);
+    assert_eq!(
+        ContextCalculatedCollection::read_from(&mut Cursor::new([5, 6, 0xaa]), &ctx).unwrap(),
+        value
+    );
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct SyntheticScalar {
+    raw: u8,
+    #[silkroad(calculate = "u16::from(raw) + ctx.get::<u16>().unwrap_or(0)")]
+    calculated: u16,
+}
+
+#[test]
+fn synthetic_scalars_are_omitted_and_canonicalized() {
+    let ctx = SerdeContext::default();
+    ctx.set(10u16);
+    let canonical = SyntheticScalar {
+        raw: 2,
+        calculated: 12,
+    };
+    assert_eq!(canonical.byte_size(), 1);
+    let mut output = BytesMut::new();
+    canonical.write_to(&mut output, &ctx).unwrap();
+    assert_eq!(output.as_ref(), &[2]);
+    let decoded = SyntheticScalar::read_from(&mut Cursor::new([2]), &ctx).unwrap();
+    assert_eq!(decoded, canonical);
+
+    let noncanonical = SyntheticScalar {
+        raw: 2,
+        calculated: 99,
+    };
+    let mut output = BytesMut::new();
+    noncanonical.write_to(&mut output, &ctx).unwrap();
+    let decoded = SyntheticScalar::read_from(&mut Cursor::new(output), &ctx).unwrap();
+    assert_eq!(decoded.calculated, 12);
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct ArrayAndTuple {
+    empty: [u8; 0],
+    words: [u16; 2],
+    custom: [Test; 1],
+    unit: (),
+    single: (u8,),
+}
+
+struct FailingElement;
+
+impl ByteSize for FailingElement {
+    fn byte_size(&self) -> usize {
+        0
+    }
+}
+
+impl Serialize for FailingElement {
+    fn write_to(
+        &self,
+        _writer: &mut BytesMut,
+        _ctx: &SerdeContext,
+    ) -> Result<(), SerializationError> {
+        Err(SerializationError::CalculatedLengthOutOfRange { field: "element" })
+    }
+}
+
+#[test]
+fn generic_array_serialization_propagates_element_errors() {
+    let mut output = BytesMut::new();
+    let error = [FailingElement]
+        .write_to(&mut output, &SerdeContext::default())
+        .expect_err("element failure must propagate");
+    assert!(matches!(
+        error,
+        SerializationError::CalculatedLengthOutOfRange { field: "element" }
+    ));
+}
+
+#[test]
+fn generic_arrays_and_tuple_edge_cases_round_trip() {
+    assert_round_trip(
+        ArrayAndTuple {
+            empty: [],
+            words: [0x1234, 0x5678],
+            custom: [Test {
+                one: 1,
+                two: 2,
+                three: 3,
+                four: 4,
+            }],
+            unit: (),
+            single: (9,),
+        },
+        &[
+            0x34, 0x12, 0x78, 0x56, 1, 2, 0, 3, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 9,
+        ],
+        &SerdeContext::default(),
+    );
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct ClosureCondition {
+    value: u8,
+    values: [u8; 1],
+    #[silkroad(when = "value == 4 && values.iter().any(|value| *value == 1)")]
+    optional: Option<u8>,
+}
+
+#[test]
+fn expression_rewriting_preserves_closure_bindings() {
+    assert_round_trip(
+        ClosureCondition {
+            value: 4,
+            values: [1],
+            optional: Some(7),
+        },
+        &[4, 1, 7],
+        &SerdeContext::default(),
+    );
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct ReservedFieldNames {
+    reader: u8,
+    ctx: u8,
+    writer: u8,
+    #[silkroad(when = "reader == 1 && ctx == 2 && writer == 3")]
+    optional: Option<u16>,
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+enum EnumTagNameCollision {
+    #[silkroad(when = "tag == 7")]
+    Value {
+        #[silkroad(tag)]
+        selector: u8,
+        tag: u16,
+        writer: u8,
+        ctx: u8,
+    },
+}
+
+#[test]
+fn generated_bindings_do_not_collide_with_fields_or_parameters() {
+    assert_round_trip(
+        ReservedFieldNames {
+            reader: 1,
+            ctx: 2,
+            writer: 3,
+            optional: Some(0x1234),
+        },
+        &[1, 2, 3, 0x34, 0x12],
+        &SerdeContext::default(),
+    );
+    assert_round_trip(
+        EnumTagNameCollision::Value {
+            selector: 7,
+            tag: 0x1234,
+            writer: 8,
+            ctx: 9,
+        },
+        &[7, 0x34, 0x12, 8, 9],
+        &SerdeContext::default(),
+    );
+}
+
+#[test]
+fn predicate_serialization_enforces_first_match_order() {
+    let value = TaggedEnum::B { value: 50 };
+    assert_serialization_error(&value, &SerdeContext::default(), |error| {
+        matches!(
+            error,
+            SerializationError::VariantConditionMismatch {
+                enum_name: "TaggedEnum",
+                variant: "B"
+            }
+        )
+    });
+}
+
+#[derive(Clone, Copy)]
+struct Selection(u8);
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+#[silkroad(size = 0)]
+enum ContextEnum {
+    #[silkroad(when = "ctx.get::<Selection>().is_some_and(|selection| selection.0 == 1)")]
+    One(u8),
+    #[silkroad(when = "ctx.get::<Selection>().is_some_and(|selection| selection.0 == 2)")]
+    Two(u8),
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+#[silkroad(size = 4)]
+enum U32Enum {
+    #[silkroad(value = 0x0102_0304)]
+    Value,
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+#[silkroad(size = 8)]
+enum U64Enum {
+    #[silkroad(value = 0x0102_0304_0506_0708)]
+    Value,
+}
+
+#[test]
+fn fixed_enums_honor_four_and_eight_byte_discriminants() {
+    assert_round_trip(U32Enum::Value, &[4, 3, 2, 1], &SerdeContext::default());
+    assert_round_trip(
+        U64Enum::Value,
+        &[8, 7, 6, 5, 4, 3, 2, 1],
+        &SerdeContext::default(),
+    );
+
+    let error = U64Enum::read_from(
+        &mut Cursor::new(u64::MAX.to_le_bytes()),
+        &SerdeContext::default(),
+    )
+    .expect_err("unknown u64 discriminant must fail losslessly");
+    assert!(matches!(
+        error,
+        SerializationError::UnknownVariation(u64::MAX, "U64Enum")
+    ));
+}
+
+#[test]
+fn zero_width_enums_use_context_and_report_no_match() {
+    let ctx = SerdeContext::default();
+    ctx.set(Selection(2));
+    let value = ContextEnum::Two(9);
+    assert_eq!(value.byte_size(), 1);
+    let mut output = BytesMut::new();
+    value.write_to(&mut output, &ctx).unwrap();
+    assert_eq!(output.as_ref(), &[9]);
+    assert_eq!(
+        ContextEnum::read_from(&mut Cursor::new([9]), &ctx).unwrap(),
+        ContextEnum::Two(9)
+    );
+
+    ctx.set(Selection(1));
+    let error = ContextEnum::Two(9)
+        .write_to(&mut BytesMut::new(), &ctx)
+        .expect_err("selected Rust variant must be the first matching predicate");
+    assert!(matches!(
+        error,
+        SerializationError::VariantConditionMismatch {
+            enum_name: "ContextEnum",
+            variant: "Two"
+        }
+    ));
+
+    ctx.unset::<Selection>();
+    let error =
+        ContextEnum::read_from(&mut Cursor::new([]), &ctx).expect_err("no selector should match");
+    assert!(matches!(
+        error,
+        SerializationError::NoMatchingVariant {
+            enum_name: "ContextEnum"
+        }
+    ));
 }

@@ -64,9 +64,11 @@ impl PacketRegistry {
         }
     }
 
-    /// Tries to encode the given packet as provided by the encoders in the
-    /// registry. Will fail if no encode is present for the opcode in the
-    /// registry. Returns the serialized data from the packet.
+    /// Converts the registered dynamic packet into an [OutgoingPacket].
+    ///
+    /// Returns [OutStreamError::UnknownOpcode] when no encoder is registered.
+    /// Packet construction and serialization failures are propagated as
+    /// [OutStreamError::PacketError].
     pub fn encode(
         &self,
         opcode: u16,

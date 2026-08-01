@@ -4,9 +4,9 @@ use bytes::{BufMut, Bytes, BytesMut};
 use skrillax_codec::{MAX_MASSIVE_CONTAINER_INNER_SIZE, SilkroadFrame};
 use skrillax_packet::{
     AsFrames, AsPacket, FramingError, FromFrames, IncomingPacket, OutgoingPacket, Packet,
-    SecurityContext,
+    PacketError, SecurityContext,
 };
-use skrillax_serde::{ByteSize, SerdeContext, Serialize};
+use skrillax_serde::{ByteSize, SerdeContext, SerializationError, Serialize};
 
 struct RawMassive(Vec<u8>);
 
@@ -28,10 +28,48 @@ impl Serialize for RawMassive {
         &self,
         writer: &mut BytesMut,
         _ctx: &SerdeContext,
-    ) -> Result<(), skrillax_serde::SerializationError> {
+    ) -> Result<(), SerializationError> {
         writer.put_slice(&self.0);
         Ok(())
     }
+}
+
+struct FailingMassive;
+
+impl Packet for FailingMassive {
+    const ID: u16 = 0x4343;
+    const NAME: &'static str = "FailingMassive";
+    const MASSIVE: bool = true;
+    const ENCRYPTED: bool = false;
+}
+
+impl ByteSize for FailingMassive {
+    fn byte_size(&self) -> usize {
+        0
+    }
+}
+
+impl Serialize for FailingMassive {
+    fn write_to(
+        &self,
+        _writer: &mut BytesMut,
+        _ctx: &SerdeContext,
+    ) -> Result<(), SerializationError> {
+        Err(SerializationError::NoMatchingVariant {
+            enum_name: "FailingMassive",
+        })
+    }
+}
+
+fn assert_failing_massive_error(result: Result<OutgoingPacket, PacketError>) {
+    assert!(matches!(
+        result,
+        Err(PacketError::SerializationError(
+            SerializationError::NoMatchingVariant {
+                enum_name: "FailingMassive"
+            }
+        ))
+    ));
 }
 
 fn payload(size: usize) -> Vec<u8> {
@@ -138,6 +176,22 @@ fn massive_packet_slice_preserves_boundary_payloads() {
 
         assert_massive_round_trip(outgoing, &expected, &expected_container_sizes);
     }
+}
+
+#[test]
+fn individual_as_packet_preserves_serialization_failure() {
+    let result = FailingMassive.as_packet(&SerdeContext::default());
+
+    assert_failing_massive_error(result);
+}
+
+#[test]
+fn massive_slice_as_packet_preserves_serialization_failure() {
+    let packets = [FailingMassive];
+
+    let result = packets.as_slice().as_packet(&SerdeContext::default());
+
+    assert_failing_massive_error(result);
 }
 
 #[test]

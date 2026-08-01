@@ -21,9 +21,11 @@
 //! representing the packet. This would include combining multiple massive
 //! frames into one large buffer as well as decrypting the content of frames to
 //! figure out their opcodes. Thus, the chain goes something like this, in a
-//! simplified way. To turn a packet into frames:
-//! `myPacket.serialize().as_frames(context)` To turn frames into a packet:
-//! `IncomingPacket::from_frames(frames, context).try_into_packet::<MyPacket>()`
+//! simplified way. To turn a packet into frames, first call the fallible
+//! `my_packet.as_packet(&serde_context)?`, then
+//! `outgoing.as_frames(security_context)?`. To turn frames into a packet, use
+//! `IncomingPacket::from_frames(frames, security_context)` followed by the
+//! packet's `TryFromPacket` implementation.
 //!
 //! However, this does require a bit more than just the [Packet] implementation.
 //! Either you need to implement the [TryFromPacket] and [AsPacket] traits
@@ -157,19 +159,27 @@ impl OutgoingPacket {
     }
 }
 
-/// Defines _something_ that can be turned into a packet, which then can be sent
-/// out.
+/// Fallibly converts a value into an [OutgoingPacket].
 ///
-/// Generally, this will be either a single struct representing a single
-/// operation, or a 'protocol' enum containing a list of multiple packets. For
-/// convenience, this trait has a blanket implementation for everything which
-/// already implements [Packet] and [Serialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Serialize.html).
+/// Generally, this is a struct representing one operation or a protocol enum
+/// containing several packet types. A blanket implementation is provided for
+/// values implementing [Packet] and
+/// [Serialize](https://docs.rs/skrillax-serde/latest/skrillax_serde/trait.Serialize.html),
+/// as well as slices of massive packets.
 ///
-/// The analog is [TryFromPacket].
+/// Packet serialization uses a fresh buffer. If serialization fails, that
+/// buffer is discarded and the original
+/// [`skrillax_serde::SerializationError`] is returned as a [PacketError]. No
+/// partially constructed packet is returned.
+///
+/// The incoming analog is [TryFromPacket].
 pub trait AsPacket {
-    /// Serializes this structure into a packet that can be sent over the wire.
-    /// A [SerdeContext] is provided to control stateful parsing of packets if
-    /// necessary for a request-response style of operation.
+    /// Serializes this value using `ctx` and constructs a packet ready for
+    /// framing.
+    ///
+    /// This can fail when serialization rejects an unrepresentable or
+    /// internally inconsistent value. Callers must handle the returned
+    /// [PacketError] before attempting to create or send frames.
     fn as_packet(&self, ctx: &SerdeContext) -> Result<OutgoingPacket, PacketError>;
 }
 
