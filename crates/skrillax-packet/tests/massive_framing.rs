@@ -253,6 +253,86 @@ fn zero_container_header_crc_is_validated_before_completion() {
 }
 
 #[test]
+fn secured_massive_packet_round_trips() {
+    let expected = payload(MAX_MASSIVE_CONTAINER_INNER_SIZE + 1);
+    let outgoing = RawMassive(expected.clone())
+        .as_packet(&SerdeContext::default())
+        .expect("valid massive packet should serialize");
+    let sender_security = SecurityBytes::from_seeds(0x1234_5678, 0x9ABC_DEF0);
+    let receiver_security = SecurityBytes::from_seeds(0x1234_5678, 0x9ABC_DEF0);
+    let frames = outgoing
+        .as_frames(SecurityContext::new(None, Some(&sender_security)))
+        .expect("secured massive packet should produce frames");
+    let parsed_frames = frames
+        .iter()
+        .map(|frame| {
+            let wire = frame.serialize();
+            SilkroadFrame::parse(&wire)
+                .map(|(_, parsed)| parsed)
+                .expect("generated massive frame should parse")
+        })
+        .collect::<Vec<_>>();
+
+    let incoming = IncomingPacket::from_frames(
+        &parsed_frames,
+        SecurityContext::new(None, Some(&receiver_security)),
+    )
+    .expect("secured massive packet should pass integrity verification");
+
+    let (opcode, data) = incoming.consume();
+    assert_eq!(RawMassive::ID, opcode);
+    assert_eq!(expected, data.as_ref());
+}
+
+#[test]
+fn secured_massive_packet_rejects_tampered_container_payload() {
+    let sender_security = SecurityBytes::from_seeds(0x1234_5678, 0x9ABC_DEF0);
+    let receiver_security = SecurityBytes::from_seeds(0x1234_5678, 0x9ABC_DEF0);
+    let outgoing = OutgoingPacket::Massive {
+        opcode: RawMassive::ID,
+        packets: vec![Bytes::from_static(&[1, 2, 3])],
+    };
+    let mut frames = outgoing
+        .as_frames(SecurityContext::new(None, Some(&sender_security)))
+        .expect("secured massive packet should produce frames");
+    let SilkroadFrame::MassiveContainer { inner, .. } = &mut frames[1] else {
+        panic!("non-empty massive packet should contain a container");
+    };
+    *inner = Bytes::from_static(&[1, 2, 4]);
+
+    let result = IncomingPacket::from_frames(
+        &frames,
+        SecurityContext::new(None, Some(&receiver_security)),
+    );
+
+    assert!(matches!(result, Err(ReframingError::CrcCheckFailed { .. })));
+}
+
+#[test]
+fn secured_massive_packet_rejects_tampered_container_crc() {
+    let sender_security = SecurityBytes::from_seeds(0x1234_5678, 0x9ABC_DEF0);
+    let receiver_security = SecurityBytes::from_seeds(0x1234_5678, 0x9ABC_DEF0);
+    let outgoing = OutgoingPacket::Massive {
+        opcode: RawMassive::ID,
+        packets: vec![Bytes::from_static(&[1, 2, 3])],
+    };
+    let mut frames = outgoing
+        .as_frames(SecurityContext::new(None, Some(&sender_security)))
+        .expect("secured massive packet should produce frames");
+    let SilkroadFrame::MassiveContainer { crc, .. } = &mut frames[1] else {
+        panic!("non-empty massive packet should contain a container");
+    };
+    *crc = crc.wrapping_add(1);
+
+    let result = IncomingPacket::from_frames(
+        &frames,
+        SecurityContext::new(None, Some(&receiver_security)),
+    );
+
+    assert!(matches!(result, Err(ReframingError::CrcCheckFailed { .. })));
+}
+
+#[test]
 fn single_massive_packet_preserves_boundary_payloads() {
     for (size, expected_container_sizes) in boundary_cases() {
         let expected = payload(size);

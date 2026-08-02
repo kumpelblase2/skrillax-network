@@ -34,7 +34,12 @@ pub enum FrameParseError {
     MassiveHeaderTooShort { actual: usize },
 }
 
-const MASSIVE_PACKET_OPCODE: u16 = 0x600D;
+/// Opcode reserved for massive packet headers and containers.
+pub const MASSIVE_PACKET_OPCODE: u16 = 0x600D;
+/// Mode byte identifying a massive packet header.
+pub const MASSIVE_HEADER_MODE: u8 = 1;
+/// Mode byte identifying a massive packet data container.
+pub const MASSIVE_CONTAINER_MODE: u8 = 0;
 const ENCRYPTED_FRAME_FLAG: u16 = 0x8000;
 const FRAME_CONTENT_LENGTH_MASK: u16 = 0x7FFF;
 const ENCRYPTED_ALIGNMENT: usize = 8;
@@ -215,7 +220,7 @@ impl SilkroadFrame {
 
         if opcode == MASSIVE_PACKET_OPCODE {
             let mode = *data.get(4).ok_or(FrameParseError::MissingMassiveMode)?;
-            if mode == 1 {
+            if mode == MASSIVE_HEADER_MODE {
                 if data.len() < 10 {
                     return Err(FrameParseError::MassiveHeaderTooShort { actual: data.len() });
                 }
@@ -329,7 +334,7 @@ impl SilkroadFrame {
                 output.put_u16_le(MASSIVE_PACKET_OPCODE);
                 output.put_u8(*count);
                 output.put_u8(*crc);
-                output.put_u8(1);
+                output.put_u8(MASSIVE_HEADER_MODE);
                 output.put_u16_le(*contained_count);
                 output.put_u16_le(*contained_opcode);
                 output.put_u8(0);
@@ -339,7 +344,7 @@ impl SilkroadFrame {
                 output.put_u16_le(MASSIVE_PACKET_OPCODE);
                 output.put_u8(*count);
                 output.put_u8(*crc);
-                output.put_u8(0);
+                output.put_u8(MASSIVE_CONTAINER_MODE);
                 output.put_slice(inner);
             },
         }

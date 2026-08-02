@@ -57,7 +57,10 @@
 //! packet. The name is automatically considered to be the structure's name.
 
 use bytes::{BufMut, Bytes, BytesMut};
-use skrillax_codec::{FrameParseError, MAX_MASSIVE_CONTAINER_INNER_SIZE, SilkroadFrame};
+use skrillax_codec::{
+    FrameParseError, MASSIVE_CONTAINER_MODE, MASSIVE_HEADER_MODE, MASSIVE_PACKET_OPCODE,
+    MAX_MASSIVE_CONTAINER_INNER_SIZE, SilkroadFrame,
+};
 use skrillax_security::handshake::CheckBytesInitialization;
 use skrillax_security::{Checksum, ChecksumBuilder, MessageCounter, SilkroadEncryption};
 use std::sync::Mutex;
@@ -392,21 +395,12 @@ impl AsFrames for OutgoingPacket {
                     .unwrap_or(0);
                 let mut frames = Vec::with_capacity(1 + packets.len());
 
-                let crc = if let Some(mut checksum_builder) = context
+                let crc = context
                     .checkers()
-                    .map(|checkers| checkers.checksum_builder())
-                {
-                    checksum_builder.update(&5u16.to_le_bytes());
-                    checksum_builder.update(&0x600Du16.to_le_bytes());
-                    checksum_builder.update_byte(count);
-                    checksum_builder.update_byte(0);
-                    checksum_builder.update_byte(1);
-                    checksum_builder.update(&opcode.to_le_bytes());
-                    checksum_builder.update(&contained_count.to_le_bytes());
-                    checksum_builder.digest()
-                } else {
-                    0
-                };
+                    .map(|checkers| {
+                        checkers.generate_massive_header_checksum(count, *opcode, contained_count)
+                    })
+                    .unwrap_or(0);
 
                 frames.push(SilkroadFrame::MassiveHeader {
                     count,
@@ -421,20 +415,10 @@ impl AsFrames for OutgoingPacket {
                         .map(|check| check.generate_count_byte())
                         .unwrap_or(0);
 
-                    let crc = if let Some(mut checksum_builder) = context
+                    let crc = context
                         .checkers()
-                        .map(|checkers| checkers.checksum_builder())
-                    {
-                        checksum_builder.update(&((packet.len() + 1) as u16).to_le_bytes());
-                        checksum_builder.update(&0x600Du16.to_le_bytes());
-                        checksum_builder.update_byte(count);
-                        checksum_builder.update_byte(0);
-                        checksum_builder.update_byte(0);
-                        checksum_builder.update(packet);
-                        checksum_builder.digest()
-                    } else {
-                        0
-                    };
+                        .map(|checkers| checkers.generate_massive_container_checksum(count, packet))
+                        .unwrap_or(0);
 
                     frames.push(SilkroadFrame::MassiveContainer {
                         count,
@@ -618,15 +602,11 @@ impl FromFrames for IncomingPacket {
                             });
                         }
 
-                        let mut checksum_builder = checkers.checksum_builder();
-                        checksum_builder.update(&5u16.to_le_bytes());
-                        checksum_builder.update(&0x600Du16.to_le_bytes());
-                        checksum_builder.update_byte(*count);
-                        checksum_builder.update_byte(0);
-                        checksum_builder.update_byte(1);
-                        checksum_builder.update(&contained_opcode.to_le_bytes());
-                        checksum_builder.update(&contained_count.to_le_bytes());
-                        let expected_crc = checksum_builder.digest();
+                        let expected_crc = checkers.generate_massive_header_checksum(
+                            *count,
+                            *contained_opcode,
+                            *contained_count,
+                        );
                         if *crc != expected_crc {
                             return Err(ReframingError::CrcCheckFailed {
                                 expected: expected_crc,
@@ -660,14 +640,8 @@ impl FromFrames for IncomingPacket {
                                 });
                             }
 
-                            let mut checksum_builder = checkers.checksum_builder();
-                            checksum_builder.update(&(1u16 + inner.len() as u16).to_le_bytes());
-                            checksum_builder.update(&0x600Du16.to_le_bytes());
-                            checksum_builder.update_byte(*count);
-                            checksum_builder.update_byte(0);
-                            checksum_builder.update_byte(1);
-                            checksum_builder.update(inner);
-                            let expected_crc = checksum_builder.digest();
+                            let expected_crc =
+                                checkers.generate_massive_container_checksum(*count, inner);
                             if *crc != expected_crc {
                                 return Err(ReframingError::CrcCheckFailed {
                                     expected: expected_crc,
@@ -731,6 +705,34 @@ impl SecurityBytes {
 
     pub fn checksum_builder(&self) -> ChecksumBuilder<'_> {
         self.checksum.builder()
+    }
+
+    fn generate_massive_header_checksum(
+        &self,
+        count: u8,
+        contained_opcode: u16,
+        contained_count: u16,
+    ) -> u8 {
+        let mut checksum_builder = self.checksum_builder();
+        checksum_builder.update(&5u16.to_le_bytes());
+        checksum_builder.update(&MASSIVE_PACKET_OPCODE.to_le_bytes());
+        checksum_builder.update_byte(count);
+        checksum_builder.update_byte(0);
+        checksum_builder.update_byte(MASSIVE_HEADER_MODE);
+        checksum_builder.update(&contained_opcode.to_le_bytes());
+        checksum_builder.update(&contained_count.to_le_bytes());
+        checksum_builder.digest()
+    }
+
+    fn generate_massive_container_checksum(&self, count: u8, inner: &[u8]) -> u8 {
+        let mut checksum_builder = self.checksum_builder();
+        checksum_builder.update(&((inner.len() + 1) as u16).to_le_bytes());
+        checksum_builder.update(&MASSIVE_PACKET_OPCODE.to_le_bytes());
+        checksum_builder.update_byte(count);
+        checksum_builder.update_byte(0);
+        checksum_builder.update_byte(MASSIVE_CONTAINER_MODE);
+        checksum_builder.update(inner);
+        checksum_builder.digest()
     }
 }
 
