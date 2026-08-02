@@ -23,11 +23,11 @@ help: the trait `Deserialize` is not implemented for `Unrelated`
 4 | struct Unrelated;
   | ^^^^^^^^^^^^^^^^
   = help: the following other types implement trait `Deserialize`:
-            SilkroadTime
+            ExpandedSilkroadTime
+            PackedSilkroadTime
             UnsupportedType
             [T; N]
             bool
-            chrono::datetime::DateTime<chrono::offset::utc::Utc>
             f32
             f64
             i16

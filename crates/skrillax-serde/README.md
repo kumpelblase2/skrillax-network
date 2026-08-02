@@ -42,6 +42,39 @@ See the derive crate's
 for the complete attribute rules, calculated fields, enum predicates, and
 supported nesting.
 
+## Time formats
+
+Time support requires the default-enabled `chrono` feature. The crate supports
+two distinct little-endian wire layouts:
+
+| Rust type | Layout | Representability |
+|---|---|---|
+| `PackedSilkroadTime` | 4-byte packed calendar | Valid UTC dates in years `2000..=2063`, whole seconds only |
+| `ExpandedSilkroadTime` | Six `u16` calendar fields plus one `u32` fraction (16 bytes) | UTC year must fit `u16`; fraction is nanoseconds within the second (`0..=999_999_999`) |
+
+Both types are UTC-backed newtypes. `TryFrom<DateTime<Tz>>` converts the input
+instant to UTC and validates wire representability before constructing either
+wrapper. This means a successfully constructed value is ready to serialize:
+packed construction rejects out-of-range years and subsecond precision, while
+expanded construction rejects a UTC year that cannot fit its `u16` field.
+Borrow the normalized value with `as_datetime()` or extract it with
+`into_datetime()`.
+
+Only the explicit wrappers implement `Serialize`, `Deserialize`, and
+`ByteSize`; bare `chrono::DateTime` values do not select a Silkroad wire layout.
+Expanded deserialization treats the calendar fields as UTC. The wire format
+contains no timezone marker; UTC normalization during wrapper construction is
+this crate's explicit API policy. See the
+[expanded-time protocol evidence](../../docs/protocol/expanded-time.md) for the
+nanosecond interpretation and its provenance.
+
+A complete malformed wire value produces a typed `TimeError`, wrapped as
+`SerializationError::Time` by the serialization traits. Direct time decoding
+reports truncation as `SerializationError::IoError`; a derived packet field may
+add its field context as `SerializationError::FieldIoError`. `ByteSize` reports
+the wrapper's fixed width: 4 bytes for packed time and 16 bytes for expanded
+time.
+
 ## Serialization contract
 
 `Serialize::write_to` and `write_to_end` return
@@ -107,3 +140,77 @@ Replace `Bytes::from(value)` or conversions through `Into<Bytes>` with
 return `Result<(), SerializationError>` and propagate nested writes with `?`.
 At the packet layer, `AsPacket::as_packet` also returns a `Result`; stream APIs
 surface failures as `OutStreamError::PacketError` before sending frames.
+
+### Packed-time migration
+
+`SilkroadTime` has been replaced by `PackedSilkroadTime`; there is no deprecated
+alias or compatibility layer. Construction and extraction do not discard
+precision or wrap out-of-range values. `TryFrom<DateTime<Tz>>` first normalizes
+the instant to UTC, then requires a whole-second value in years `2000..=2063`.
+The raw `from_u32` and `as_u32` boundaries are also fallible:
+
+```rust
+use chrono::{DateTime, FixedOffset, Utc};
+use skrillax_serde::{PackedSilkroadTime, TimeError};
+use std::time::Duration;
+
+fn from_datetime(value: DateTime<FixedOffset>) -> Result<u32, TimeError> {
+    let packed = PackedSilkroadTime::try_from(value)?;
+    packed.as_u32()
+}
+
+fn from_wire_integer(raw: u32) -> Result<PackedSilkroadTime, TimeError> {
+    PackedSilkroadTime::from_u32(raw)
+}
+
+fn from_elapsed_since_epoch(
+    elapsed: Duration,
+) -> Result<PackedSilkroadTime, TimeError> {
+    // Duration::ZERO is 2000-01-01 00:00:00 UTC.
+    PackedSilkroadTime::try_from(elapsed)
+}
+
+fn extract(value: PackedSilkroadTime) -> DateTime<Utc> {
+    value.into_datetime()
+}
+```
+
+The old infallible `From<DateTime<Utc>>` and `From<Duration>` implementations
+and `Default` remain removed. Use `as_datetime()` when only a borrowed UTC
+`DateTime` is needed.
+
+### Expanded-time migration
+
+Bare `DateTime<Utc>` packet fields must become `ExpandedSilkroadTime` fields.
+Bare `DateTime<Tz>` no longer implements this crate's serialization traits, so
+the wire layout is explicit at each field. Construct the wrapper with `TryFrom`
+at an application boundary; any timezone is normalized to UTC and the expanded
+year is validated there. After decoding, use `as_datetime()` to borrow the UTC
+value or `into_datetime()` to extract it.
+
+The expanded format preserves nanoseconds rather than interpreting or emitting
+the trailing field as an absolute timestamp:
+
+```rust
+use bytes::BytesMut;
+use chrono::{DateTime, FixedOffset, Utc};
+use skrillax_serde::{
+    Deserialize, ExpandedSilkroadTime, SerdeContext, SerializationError, Serialize,
+};
+
+fn round_trip_expanded(
+    value: DateTime<FixedOffset>,
+) -> Result<DateTime<Utc>, SerializationError> {
+    let value = ExpandedSilkroadTime::try_from(value)?;
+    let context = SerdeContext::default();
+    let mut bytes = BytesMut::new();
+    value.write_to(&mut bytes, &context)?;
+
+    let mut input = &bytes[..];
+    let decoded = ExpandedSilkroadTime::read_from(&mut input, &context)?;
+    Ok(decoded.into_datetime())
+}
+```
+
+There is no compatibility implementation for bare `DateTime` and no alias for
+the old `SilkroadTime` name.

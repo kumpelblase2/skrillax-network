@@ -1,6 +1,5 @@
-use chrono::{DateTime, Utc};
 use skrillax_packet::Packet;
-use skrillax_serde::{ByteSize, Deserialize, Serialize};
+use skrillax_serde::{ByteSize, Deserialize, ExpandedSilkroadTime, Serialize};
 use skrillax_stream::handshake::HandshakePacketRegistryExt;
 use skrillax_stream::registry::PacketRegistry;
 use skrillax_stream::{handshake::PassiveSecuritySetup, stream::SilkroadTcpExt};
@@ -29,15 +28,13 @@ pub struct GatewayNoticeResponse {
     pub notices: Vec<GatewayNotice>,
 }
 
-type ServerDateTime = DateTime<Utc>;
-
 #[derive(Clone, Deserialize, Serialize, ByteSize, Debug)]
 pub struct GatewayNotice {
     #[silkroad(size = 2)]
     pub subject: String,
     #[silkroad(size = 2)]
     pub article: String,
-    pub published: ServerDateTime,
+    pub published: ExpandedSilkroadTime,
 }
 
 #[tokio::main]
@@ -77,7 +74,7 @@ async fn main() {
     for notice in &notices.notices {
         println!(
             "{}: {} - {}",
-            notice.published,
+            notice.published.as_datetime(),
             notice.subject,
             &notice.article[0..10]
         );

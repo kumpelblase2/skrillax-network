@@ -64,6 +64,9 @@ pub enum SerializationError {
     StringParsingFailed(#[from] FromUtf8Error),
     #[error("Could not convert bytes to a utf16 string")]
     Utf16ParsingFailed(#[from] FromUtf16Error),
+    #[cfg(feature = "chrono")]
+    #[error(transparent)]
+    Time(#[from] crate::time::TimeError),
 }
 
 impl SerializationError {

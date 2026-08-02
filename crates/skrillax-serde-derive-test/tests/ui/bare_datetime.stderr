@@ -1,0 +1,28 @@
+error[E0599]: no method named `write_to` found for struct `DateTime<Tz>` in the current scope
+ --> tests/ui/bare_datetime.rs:8:5
+  |
+8 |     value: DateTime<Utc>,
+  |     ^^^^^ method not found in `DateTime<Utc>`
+
+error[E0277]: the trait bound `DateTime<Utc>: Deserialize` is not satisfied
+ --> tests/ui/bare_datetime.rs:8:12
+  |
+8 |     value: DateTime<Utc>,
+  |            ^^^^^^^^^^^^^ the trait `Deserialize` is not implemented for `DateTime<Utc>`
+  |
+  = help: the following other types implement trait `Deserialize`:
+            BareDateTime
+            ExpandedSilkroadTime
+            PackedSilkroadTime
+            [T; N]
+            bool
+            f32
+            f64
+            i16
+          and $N others
+
+error[E0599]: no method named `byte_size` found for struct `DateTime<Tz>` in the current scope
+ --> tests/ui/bare_datetime.rs:8:5
+  |
+8 |     value: DateTime<Utc>,
+  |     ^^^^^ method not found in `DateTime<Utc>`

@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{Arc, RwLock};
 #[cfg(feature = "chrono")]
-pub use time::SilkroadTime;
+pub use time::{ExpandedSilkroadTime, PackedSilkroadTime, TimeError};
 
 // This is necessary, because otherwise we'd need to make the user of our derive
 // traits add `use` definitions for `bytes` and `byteorder`. Which would require
