@@ -108,6 +108,36 @@ fn append<T: Serialize>(
 `write_to_end` reserves `byte_size()` bytes before serialization. Reservation
 can overallocate when an ill-formed value later fails; it is not validation.
 
+## Collection deserialization limits
+
+Collection decoding is unlimited by default, preserving the protocol's existing
+count range. Applications accepting untrusted input can opt into a per-
+collection element limit through `SerdeContext`:
+
+```rust
+use skrillax_serde::{DeserializationLimits, SerdeContext};
+
+let context = SerdeContext::default();
+context.set_deserialization_limits(
+    DeserializationLimits::with_max_collection_elements(10_000),
+);
+```
+
+Choose a maximum appropriate for the application's packet models; there is no
+universal safe value. Counted and calculated collections are checked before
+allocation and element decoding. Sentinel-framed collections are checked before
+each announced element. Capacity reservation is fallible even when no policy is
+configured, so capacity overflow and allocator failures reported by
+`try_reserve` return `SerializationError::CollectionAllocationFailed` rather
+than panicking through eager capacity creation.
+
+The setting applies independently to each collection and is measured in
+elements, not bytes. It is used during deserialization only: `Serialize` and
+`ByteSize` ignore it. It is not a cumulative nested-value budget or a byte,
+packet, frame, reassembly, connection, or stream limit. Context clones share the
+setting; configure it before decoding and do not mutate it concurrently with a
+decode. Call `clear_deserialization_limits()` to restore unlimited behavior.
+
 ## `ByteSize` contract
 
 `ByteSize::byte_size()` is infallible and context-free. For every well-formed

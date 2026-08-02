@@ -6,6 +6,11 @@
 //! reads it, and [ByteSize] reports the exact wire size of a well-formed value.
 //! `ByteSize` is infallible and non-validating; see its contract before using
 //! it for allocation.
+//!
+//! Collection decoding can be restricted with [`DeserializationLimits`] on a
+//! [`SerdeContext`]. The policy is opt-in, unlimited by default, measured in
+//! elements per collection, and affects deserialization only. It is not a byte,
+//! packet, frame, reassembly, or stream limit.
 
 pub mod error;
 mod time;
@@ -63,12 +68,59 @@ macro_rules! implement_primitive {
 
 type ContextMap = HashMap<TypeId, Box<dyn Any + Send + Sync>>;
 
+/// Receiver policy for collection deserialization.
+///
+/// The limit applies independently to each decoded collection, is measured in
+/// elements, and is consulted only during deserialization. It is not a byte,
+/// packet, frame, reassembly, stream, or cumulative nested-collection limit.
+/// The default is unlimited to preserve the full range accepted by the wire
+/// protocol.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct DeserializationLimits {
+    max_collection_elements: Option<usize>,
+}
+
+impl DeserializationLimits {
+    /// Creates a policy with no collection element limit.
+    pub const fn unlimited() -> Self {
+        Self {
+            max_collection_elements: None,
+        }
+    }
+
+    /// Creates a policy allowing at most `maximum` elements per collection.
+    ///
+    /// A maximum of zero permits empty collections and rejects every attempted
+    /// element.
+    pub const fn with_max_collection_elements(maximum: usize) -> Self {
+        Self {
+            max_collection_elements: Some(maximum),
+        }
+    }
+
+    /// Returns the configured per-collection element maximum, if any.
+    pub const fn max_collection_elements(&self) -> Option<usize> {
+        self.max_collection_elements
+    }
+}
+
+impl Default for DeserializationLimits {
+    fn default() -> Self {
+        Self::unlimited()
+    }
+}
+
 /// Context used during serialization and deserialization.
 ///
 /// Silkroad frames can be parsed in a stateless fashion, but the same
 /// cannot be said about the operations contained in those frames. There
 /// are some operations that rely on outside knowledge as well as others
 /// which depend on the request sent that evoked a given response.
+///
+/// Clones share the same type-indexed configuration. Configure receiver limits
+/// before beginning a decode and do not mutate them concurrently with that
+/// decode.
 pub struct SerdeContext {
     data: Arc<RwLock<ContextMap>>,
 }
@@ -101,6 +153,49 @@ impl SerdeContext {
             .write()
             .expect("Lock should not be poisoned.")
             .remove(&TypeId::of::<T>());
+    }
+
+    /// Sets the collection policy used by subsequent deserialization.
+    ///
+    /// Context clones observe the same setting. This policy is ignored by
+    /// serialization and [`ByteSize`].
+    pub fn set_deserialization_limits(&self, limits: DeserializationLimits) {
+        self.set(limits);
+    }
+
+    /// Returns the active deserialization policy.
+    ///
+    /// An unset policy is equivalent to [`DeserializationLimits::unlimited`].
+    pub fn deserialization_limits(&self) -> DeserializationLimits {
+        self.get().unwrap_or_default()
+    }
+
+    /// Restores unlimited collection deserialization.
+    pub fn clear_deserialization_limits(&self) {
+        self.unset::<DeserializationLimits>();
+    }
+
+    /// Checks a decoded collection length against the receiver policy.
+    ///
+    /// This method is public because derive output calls it from downstream
+    /// crates; it is not intended as a general validation API.
+    #[doc(hidden)]
+    pub fn check_collection_length(
+        &self,
+        field: &'static str,
+        actual: u64,
+    ) -> Result<(), SerializationError> {
+        if let Some(maximum) = self.deserialization_limits().max_collection_elements()
+            && u64::try_from(maximum).is_ok_and(|maximum| actual > maximum)
+        {
+            return Err(SerializationError::CollectionLengthLimitExceeded {
+                field,
+                actual,
+                maximum,
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -153,10 +248,15 @@ pub trait Serialize: ByteSize {
 
 /// Creates a value from its Silkroad wire representation.
 ///
-/// Deserialization is fallible because input may be truncated, malformed, or
-/// inconsistent with the supplied [SerdeContext]. On success, an implementation
-/// consumes exactly the bytes belonging to one value and leaves trailing bytes
-/// in the reader untouched.
+/// Deserialization is fallible because input may be truncated, malformed,
+/// inconsistent with the supplied [SerdeContext], rejected by its receiver
+/// policy, or impossible to allocate. On success, an implementation consumes
+/// exactly the bytes belonging to one value and leaves trailing bytes in the
+/// reader untouched.
+///
+/// Derived collection decoders consult [`DeserializationLimits`] before known
+/// counts are allocated or elements are read. Sentinel-framed collections
+/// enforce the same policy incrementally.
 pub trait Deserialize {
     /// Reads one `Self` from `reader` using `ctx`.
     ///
@@ -467,5 +567,88 @@ mod test {
         assert_eq!(9, data.0);
         context.unset::<MyData>();
         assert!(context.get::<MyData>().is_none());
+    }
+
+    #[test]
+    fn deserialization_limits_are_unlimited_by_default() {
+        let context = SerdeContext::default();
+
+        assert_eq!(
+            context.deserialization_limits(),
+            DeserializationLimits::unlimited()
+        );
+        assert_eq!(
+            context.deserialization_limits().max_collection_elements(),
+            None
+        );
+        assert!(context.check_collection_length("items", u64::MAX).is_ok());
+    }
+
+    #[test]
+    fn deserialization_limits_can_be_set_retrieved_and_cleared() {
+        let context = SerdeContext::default();
+        let limits = DeserializationLimits::with_max_collection_elements(12);
+
+        context.set_deserialization_limits(limits);
+        assert_eq!(context.deserialization_limits(), limits);
+
+        context.clear_deserialization_limits();
+        assert_eq!(
+            context.deserialization_limits(),
+            DeserializationLimits::unlimited()
+        );
+    }
+
+    #[test]
+    fn cloned_context_observes_deserialization_limit_updates() {
+        let context = SerdeContext::default();
+        let clone = context.clone();
+
+        context.set_deserialization_limits(DeserializationLimits::with_max_collection_elements(3));
+        assert_eq!(
+            clone.deserialization_limits().max_collection_elements(),
+            Some(3)
+        );
+
+        clone.clear_deserialization_limits();
+        assert_eq!(
+            context.deserialization_limits().max_collection_elements(),
+            None
+        );
+    }
+
+    #[test]
+    fn zero_collection_limit_accepts_empty_and_rejects_first_element() {
+        let context = SerdeContext::default();
+        context.set_deserialization_limits(DeserializationLimits::with_max_collection_elements(0));
+
+        assert!(context.check_collection_length("items", 0).is_ok());
+        assert!(matches!(
+            context.check_collection_length("items", 1),
+            Err(SerializationError::CollectionLengthLimitExceeded {
+                field: "items",
+                actual: 1,
+                maximum: 0,
+            })
+        ));
+    }
+
+    #[test]
+    fn collection_policy_error_preserves_fields_and_u64_count() {
+        let context = SerdeContext::default();
+        context.set_deserialization_limits(DeserializationLimits::with_max_collection_elements(7));
+
+        let error = context
+            .check_collection_length("wide_items", u64::MAX)
+            .expect_err("the finite policy must reject u64::MAX");
+
+        assert!(matches!(
+            error,
+            SerializationError::CollectionLengthLimitExceeded {
+                field: "wide_items",
+                actual: u64::MAX,
+                maximum: 7,
+            }
+        ));
     }
 }

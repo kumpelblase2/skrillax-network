@@ -1,7 +1,9 @@
 #![cfg(test)]
 
 use bytes::BytesMut;
-use skrillax_serde::{ByteSize, Deserialize, SerdeContext, SerializationError, Serialize};
+use skrillax_serde::{
+    ByteSize, DeserializationLimits, Deserialize, SerdeContext, SerializationError, Serialize,
+};
 use std::fmt::Debug;
 use std::io::Cursor;
 
@@ -109,6 +111,13 @@ where
     assert_eq!(expected.len() as u64, reader.position());
     assert_eq!(CANARY, &reader.get_ref()[reader.position() as usize..]);
     decoded
+}
+
+fn context_with_collection_limit(maximum: usize) -> SerdeContext {
+    let context = SerdeContext::default();
+    context
+        .set_deserialization_limits(DeserializationLimits::with_max_collection_elements(maximum));
+    context
 }
 
 /// Assert that serialization returns the expected typed error.
@@ -406,8 +415,188 @@ fn counted_collections_honor_all_integer_widths() {
             1, 0, 0, 0, 3, // u32 count
             1, 0, 0, 0, 0, 0, 0, 0, 4, // u64 count
         ],
-        &SerdeContext::default(),
+        &context_with_collection_limit(1),
     );
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct CountedFour {
+    #[silkroad(size = 4)]
+    items: Vec<u8>,
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct CountedEight {
+    #[silkroad(size = 8)]
+    items: Vec<u8>,
+}
+
+#[test]
+fn counted_collections_accept_counts_equal_to_the_limit() {
+    let context = context_with_collection_limit(2);
+
+    assert_eq!(
+        CountedFour::read_from(&mut Cursor::new([2, 0, 0, 0, 7, 8]), &context).unwrap(),
+        CountedFour { items: vec![7, 8] }
+    );
+    assert_eq!(
+        CountedEight::read_from(&mut Cursor::new([2, 0, 0, 0, 0, 0, 0, 0, 7, 8]), &context,)
+            .unwrap(),
+        CountedEight { items: vec![7, 8] }
+    );
+}
+
+#[test]
+fn counted_collection_limit_errors_are_lossless_and_leave_payload_unread() {
+    let context = context_with_collection_limit(2);
+    let mut four_byte_reader = Cursor::new([3, 0, 0, 0, 0xaa]);
+    let error = CountedFour::read_from(&mut four_byte_reader, &context)
+        .expect_err("u32 count above the policy must fail");
+    assert!(matches!(
+        error,
+        SerializationError::CollectionLengthLimitExceeded {
+            field: "items",
+            actual: 3,
+            maximum: 2,
+        }
+    ));
+    assert_eq!(four_byte_reader.position(), 4);
+    assert_eq!(&four_byte_reader.get_ref()[4..], &[0xaa]);
+
+    let mut eight_byte_input = u64::MAX.to_le_bytes().to_vec();
+    eight_byte_input.push(0xbb);
+    let mut eight_byte_reader = Cursor::new(eight_byte_input);
+    let error = CountedEight::read_from(&mut eight_byte_reader, &context)
+        .expect_err("u64::MAX must be checked before conversion or allocation");
+    assert!(matches!(
+        error,
+        SerializationError::CollectionLengthLimitExceeded {
+            field: "items",
+            actual: u64::MAX,
+            maximum: 2,
+        }
+    ));
+    assert_eq!(eight_byte_reader.position(), 8);
+    assert_eq!(&eight_byte_reader.get_ref()[8..], &[0xbb]);
+}
+
+#[test]
+fn counted_prefix_errors_precede_collection_policy_checks() {
+    let context = context_with_collection_limit(0);
+    let error = CountedFour::read_from(&mut Cursor::new([1, 0]), &context)
+        .expect_err("a truncated count prefix must fail before the limit is checked");
+
+    assert!(matches!(
+        error,
+        SerializationError::FieldIoError("items", source)
+            if source.kind() == std::io::ErrorKind::UnexpectedEof
+    ));
+}
+
+#[test]
+fn configured_counted_limit_accepts_counts_below_the_maximum() {
+    let context = context_with_collection_limit(2);
+    let decoded = CountedWidths::read_from(
+        &mut Cursor::new([
+            1, 1, // u8 count
+            1, 0, 2, // u16 count
+            1, 0, 0, 0, 3, // u32 count
+            1, 0, 0, 0, 0, 0, 0, 0, 4, // u64 count
+        ]),
+        &context,
+    )
+    .unwrap();
+
+    assert_eq!(decoded.one, vec![1]);
+    assert_eq!(decoded.two, vec![2]);
+    assert_eq!(decoded.four, vec![3]);
+    assert_eq!(decoded.eight, vec![4]);
+}
+
+#[test]
+fn a_zero_limit_accepts_zero_counted_elements() {
+    let context = context_with_collection_limit(0);
+
+    assert_eq!(
+        CountedFour::read_from(&mut Cursor::new([0, 0, 0, 0, 0xaa]), &context).unwrap(),
+        CountedFour { items: Vec::new() }
+    );
+}
+
+#[test]
+fn receive_limits_do_not_affect_serialization_or_byte_size() {
+    let value = CountedFour { items: vec![7, 8] };
+    let context = context_with_collection_limit(1);
+    let expected = [2, 0, 0, 0, 7, 8];
+    let mut output = BytesMut::new();
+
+    assert_eq!(value.byte_size(), expected.len());
+    value.write_to(&mut output, &context).unwrap();
+    assert_eq!(output.as_ref(), expected);
+
+    let error = CountedFour::read_from(&mut Cursor::new(&expected), &context)
+        .expect_err("restricted decoding must reject the serialized collection");
+    assert!(matches!(
+        error,
+        SerializationError::CollectionLengthLimitExceeded {
+            field: "items",
+            actual: 2,
+            maximum: 1,
+        }
+    ));
+    assert_eq!(
+        CountedFour::read_from(&mut Cursor::new(&expected), &SerdeContext::default()).unwrap(),
+        value
+    );
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn counted_capacity_overflow_returns_a_typed_allocation_error() {
+    let mut reader = Cursor::new(u64::MAX.to_le_bytes());
+    let error = CountedEight::read_from(&mut reader, &SerdeContext::default())
+        .expect_err("usize::MAX elements cannot be reserved for Vec<u8>");
+
+    assert!(matches!(
+        error,
+        SerializationError::CollectionAllocationFailed {
+            field: "items",
+            elements: u64::MAX,
+            ..
+        }
+    ));
+    assert_eq!(reader.position(), 8);
+}
+
+#[cfg(target_pointer_width = "32")]
+#[test]
+fn counted_capacity_overflow_and_numeric_range_errors_remain_distinct() {
+    let error = CountedFour::read_from(
+        &mut Cursor::new(u32::MAX.to_le_bytes()),
+        &SerdeContext::default(),
+    )
+    .expect_err("usize::MAX elements cannot be reserved for Vec<u8>");
+    assert!(matches!(
+        error,
+        SerializationError::CollectionAllocationFailed {
+            field: "items",
+            elements: value,
+            ..
+        } if value == u64::from(u32::MAX)
+    ));
+
+    let error = CountedEight::read_from(
+        &mut Cursor::new(u64::MAX.to_le_bytes()),
+        &SerdeContext::default(),
+    )
+    .expect_err("u64::MAX cannot be represented as usize");
+    assert!(matches!(
+        error,
+        SerializationError::DecodedLengthOutOfRange {
+            field: "items",
+            value: u64::MAX,
+        }
+    ));
 }
 
 #[derive(Serialize, ByteSize)]
@@ -545,6 +734,81 @@ fn invalid_collection_markers_are_rejected() {
         SerializationError::InvalidSequenceMarker {
             field: "t0",
             value: 2
+        }
+    ));
+}
+
+#[test]
+fn sentinel_collections_enforce_limits_before_excess_item_payloads() {
+    let context = context_with_collection_limit(1);
+
+    assert_eq!(
+        Break1::read_from(&mut Cursor::new([1, 7, 2]), &context).unwrap(),
+        Break1(vec![7])
+    );
+    let mut break_reader = Cursor::new([1, 7, 1, 0xaa, 2]);
+    let error = Break1::read_from(&mut break_reader, &context)
+        .expect_err("second break-framed element must exceed the policy");
+    assert!(matches!(
+        error,
+        SerializationError::CollectionLengthLimitExceeded {
+            field: "t0",
+            actual: 2,
+            maximum: 1,
+        }
+    ));
+    assert_eq!(break_reader.position(), 3);
+    assert_eq!(&break_reader.get_ref()[3..], &[0xaa, 2]);
+
+    assert_eq!(
+        HasMore1::read_from(&mut Cursor::new([1, 7, 0]), &context).unwrap(),
+        HasMore1(vec![7])
+    );
+    let mut has_more_reader = Cursor::new([1, 7, 1, 0xbb, 0]);
+    let error = HasMore1::read_from(&mut has_more_reader, &context)
+        .expect_err("second has-more element must exceed the policy");
+    assert!(matches!(
+        error,
+        SerializationError::CollectionLengthLimitExceeded {
+            field: "t0",
+            actual: 2,
+            maximum: 1,
+        }
+    ));
+    assert_eq!(has_more_reader.position(), 3);
+    assert_eq!(&has_more_reader.get_ref()[3..], &[0xbb, 0]);
+}
+
+#[test]
+fn zero_limit_accepts_terminal_markers_and_invalid_markers_keep_precedence() {
+    let context = context_with_collection_limit(0);
+
+    assert_eq!(
+        Break1::read_from(&mut Cursor::new([2]), &context).unwrap(),
+        Break1(Vec::new())
+    );
+    assert_eq!(
+        HasMore1::read_from(&mut Cursor::new([0]), &context).unwrap(),
+        HasMore1(Vec::new())
+    );
+
+    let error = Break1::read_from(&mut Cursor::new([3]), &context)
+        .expect_err("marker validation must happen before any limit check");
+    assert!(matches!(
+        error,
+        SerializationError::InvalidSequenceMarker {
+            field: "t0",
+            value: 3,
+        }
+    ));
+
+    let error = HasMore1::read_from(&mut Cursor::new([2]), &context)
+        .expect_err("has-more marker validation must precede the limit check");
+    assert!(matches!(
+        error,
+        SerializationError::InvalidSequenceMarker {
+            field: "t0",
+            value: 2,
         }
     ));
 }
@@ -756,6 +1020,127 @@ fn calculated_collection_expressions_can_use_context() {
         ContextCalculatedCollection::read_from(&mut Cursor::new([5, 6, 0xaa]), &ctx).unwrap(),
         value
     );
+}
+
+#[derive(Deserialize, Eq, PartialEq, Debug)]
+struct WideCalculatedCollection {
+    count: u64,
+    #[silkroad(list_type = "calculated", calculate = "count")]
+    values: Vec<u8>,
+}
+
+#[test]
+fn calculated_collections_check_limits_before_reading_elements() {
+    let context = context_with_collection_limit(2);
+    assert_eq!(
+        WideCalculatedCollection::read_from(
+            &mut Cursor::new([2, 0, 0, 0, 0, 0, 0, 0, 7, 8]),
+            &context,
+        )
+        .unwrap(),
+        WideCalculatedCollection {
+            count: 2,
+            values: vec![7, 8],
+        }
+    );
+
+    let mut reader = Cursor::new([3, 0, 0, 0, 0, 0, 0, 0, 0xaa]);
+    let error = WideCalculatedCollection::read_from(&mut reader, &context)
+        .expect_err("calculated count above the policy must fail");
+    assert!(matches!(
+        error,
+        SerializationError::CollectionLengthLimitExceeded {
+            field: "values",
+            actual: 3,
+            maximum: 2,
+        }
+    ));
+    assert_eq!(reader.position(), 8);
+    assert_eq!(&reader.get_ref()[8..], &[0xaa]);
+}
+
+#[derive(Clone)]
+struct ExpressionCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+#[derive(Deserialize)]
+struct OnceCalculatedCollection(
+    #[silkroad(
+        list_type = "calculated",
+        calculate = "{ ctx.get::<ExpressionCounter>().unwrap().0.fetch_add(1, \
+                     std::sync::atomic::Ordering::SeqCst); 0usize }"
+    )]
+    Vec<u8>,
+);
+
+#[test]
+fn calculated_collection_expression_is_evaluated_once() {
+    let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let context = SerdeContext::default();
+    context.set(ExpressionCounter(std::sync::Arc::clone(&counter)));
+
+    let decoded = OnceCalculatedCollection::read_from(&mut Cursor::new([]), &context).unwrap();
+
+    assert!(decoded.0.is_empty());
+    assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn calculated_length_range_errors_are_preserved_during_deserialization() {
+    let error = CalculatedCollection::read_from(
+        &mut Cursor::new((-1i16).to_le_bytes()),
+        &SerdeContext::default(),
+    )
+    .expect_err("negative calculated count cannot become usize");
+    assert!(matches!(
+        error,
+        SerializationError::CalculatedLengthOutOfRange { field: "values" }
+    ));
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn calculated_capacity_overflow_returns_a_typed_allocation_error() {
+    let error = WideCalculatedCollection::read_from(
+        &mut Cursor::new(u64::MAX.to_le_bytes()),
+        &SerdeContext::default(),
+    )
+    .expect_err("usize::MAX elements cannot be reserved for Vec<u8>");
+    assert!(matches!(
+        error,
+        SerializationError::CollectionAllocationFailed {
+            field: "values",
+            elements: u64::MAX,
+            ..
+        }
+    ));
+}
+
+#[cfg(target_pointer_width = "32")]
+#[test]
+fn calculated_allocation_and_range_failures_remain_distinct() {
+    let error = WideCalculatedCollection::read_from(
+        &mut Cursor::new(u64::from(u32::MAX).to_le_bytes()),
+        &SerdeContext::default(),
+    )
+    .expect_err("usize::MAX elements cannot be reserved for Vec<u8>");
+    assert!(matches!(
+        error,
+        SerializationError::CollectionAllocationFailed {
+            field: "values",
+            elements: value,
+            ..
+        } if value == u64::from(u32::MAX)
+    ));
+
+    let error = WideCalculatedCollection::read_from(
+        &mut Cursor::new(u64::MAX.to_le_bytes()),
+        &SerdeContext::default(),
+    )
+    .expect_err("u64::MAX cannot become a 32-bit usize");
+    assert!(matches!(
+        error,
+        SerializationError::CalculatedLengthOutOfRange { field: "values" }
+    ));
 }
 
 #[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]

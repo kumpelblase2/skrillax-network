@@ -5,8 +5,8 @@ use thiserror::Error;
 /// A failure while serializing or deserializing Silkroad wire data.
 ///
 /// Serialization variants report unrepresentable values and violated wire
-/// invariants. Deserialization variants report malformed, truncated, or
-/// otherwise unsupported input.
+/// invariants. Deserialization variants report malformed or truncated input,
+/// receiver-policy rejection, and collection allocation failure.
 #[derive(Error, Debug)]
 pub enum SerializationError {
     #[error("I/O error when serialize/deserializing packet. {0:?}")]
@@ -60,6 +60,31 @@ pub enum SerializationError {
     InvalidSequenceMarker { field: &'static str, value: u64 },
     #[error("decoded length {value} for field {field} cannot be represented as usize")]
     DecodedLengthOutOfRange { field: &'static str, value: u64 },
+    /// A decoded collection count exceeded the receiver policy before the
+    /// collection was allocated or the rejected element was read.
+    ///
+    /// This is an application policy failure, not evidence that the wire data
+    /// is malformed or truncated.
+    #[error(
+        "collection field {field} declares {actual} elements, exceeding the configured maximum \
+         {maximum}"
+    )]
+    CollectionLengthLimitExceeded {
+        field: &'static str,
+        actual: u64,
+        maximum: usize,
+    },
+    /// Reserving storage for a decoded collection failed.
+    ///
+    /// This is distinct from a configured collection limit and can occur even
+    /// when deserialization limits are unlimited.
+    #[error("could not reserve space for {elements} elements in collection field {field}")]
+    CollectionAllocationFailed {
+        field: &'static str,
+        elements: u64,
+        #[source]
+        source: std::collections::TryReserveError,
+    },
     #[error("Could not convert bytes to a string")]
     StringParsingFailed(#[from] FromUtf8Error),
     #[error("Could not convert bytes to a utf16 string")]

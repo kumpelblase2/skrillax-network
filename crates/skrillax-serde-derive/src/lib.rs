@@ -95,6 +95,18 @@
 //! Directly nested collections and optional values are rejected because their
 //! framing would be implicit; use a wrapper struct to supply field metadata.
 //!
+//! Collection deserialization observes the optional `DeserializationLimits`
+//! stored in `SerdeContext`. The limit is unlimited by default, measured in
+//! elements, and applied independently to each collection. Known counts are
+//! checked before allocation and item reads; sentinel collections are checked
+//! before each announced item. Vector reservation failures are returned as a
+//! typed `SerializationError`.
+//!
+//! This receiver policy affects deserialization only. `Serialize` and
+//! `ByteSize` do not consult it, so the round-trip guarantee is conditional on
+//! the receiving context accepting the serialized collection lengths. It is
+//! not a byte, packet, frame, reassembly, or stream limit.
+//!
 //! ## Optional fields
 //!
 //! An `Option<T>` normally has an unsigned `0`/`1` presence marker. The marker

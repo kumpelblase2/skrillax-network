@@ -30,6 +30,19 @@ reject that value.
 Deriving `Serialize` generates `TryFrom<T> for bytes::Bytes` with
 `SerializationError`; it does not generate an infallible `From` implementation.
 
+The round-trip guarantee also assumes that the receiving `SerdeContext` accepts
+the value under its optional `DeserializationLimits`. Collection limits are
+unlimited by default, apply independently to each collection, and are measured
+in elements. Counted and calculated collections are checked before allocation
+or item reads; sentinel collections are checked incrementally. Capacity
+overflow and allocator failures reported by `try_reserve` are returned as typed
+errors even without a configured limit.
+
+This policy is deserialization-only. It does not affect `Serialize` or
+`ByteSize`, and it is not a byte, packet, frame, reassembly, connection, or
+stream limit. See the [core crate documentation](../skrillax-serde/README.md#collection-deserialization-limits)
+for configuration.
+
 ## Attribute summary
 
 - Integer widths use their actual wire-byte size: `1` → `u8`, `2` → `u16`,

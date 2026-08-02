@@ -207,6 +207,18 @@ fn read_collection(
                         match marker {
                             #end_marker => break,
                             #item_marker => {
+                                let current_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
+                                let attempted_count = current_count.checked_add(1).unwrap_or(u64::MAX);
+                                ctx.check_collection_length(#name, attempted_count)?;
+                                if items.len() == items.capacity() {
+                                    items.try_reserve(1).map_err(|source| {
+                                        skrillax_serde::SerializationError::CollectionAllocationFailed {
+                                            field: #name,
+                                            elements: attempted_count,
+                                            source,
+                                        }
+                                    })?;
+                                }
                                 #item_read
                                 items.push(#item);
                             },
@@ -232,6 +244,18 @@ fn read_collection(
                         match marker {
                             #end_marker => break,
                             #item_marker => {
+                                let current_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
+                                let attempted_count = current_count.checked_add(1).unwrap_or(u64::MAX);
+                                ctx.check_collection_length(#name, attempted_count)?;
+                                if items.len() == items.capacity() {
+                                    items.try_reserve(1).map_err(|source| {
+                                        skrillax_serde::SerializationError::CollectionAllocationFailed {
+                                            field: #name,
+                                            elements: attempted_count,
+                                            source,
+                                        }
+                                    })?;
+                                }
                                 #item_read
                                 items.push(#item);
                             },
@@ -250,13 +274,22 @@ fn read_collection(
             quote! {
                 let #ident = {
                     let decoded_count = #count;
+                    let decoded_count_u64 = u64::from(decoded_count);
+                    ctx.check_collection_length(#name, decoded_count_u64)?;
                     let count = usize::try_from(decoded_count).map_err(|_| {
                         skrillax_serde::SerializationError::DecodedLengthOutOfRange {
                             field: #name,
-                            value: u64::from(decoded_count),
+                            value: decoded_count_u64,
                         }
                     })?;
-                    let mut items = Vec::with_capacity(count);
+                    let mut items = Vec::new();
+                    items.try_reserve_exact(count).map_err(|source| {
+                        skrillax_serde::SerializationError::CollectionAllocationFailed {
+                            field: #name,
+                            elements: decoded_count_u64,
+                            source,
+                        }
+                    })?;
                     for _ in 0..count {
                         #item_read
                         items.push(#item);
@@ -269,12 +302,26 @@ fn read_collection(
             let expression = rewrite_expression(expression, expression_fields);
             quote! {
                 let #ident = {
-                    let count = usize::try_from(#expression).map_err(|_| {
+                    let calculated_count = #expression;
+                    let count = usize::try_from(calculated_count).map_err(|_| {
                         skrillax_serde::SerializationError::CalculatedLengthOutOfRange {
                             field: #name,
                         }
                     })?;
-                    let mut items = Vec::with_capacity(count);
+                    let count_u64 = u64::try_from(count).map_err(|_| {
+                        skrillax_serde::SerializationError::CalculatedLengthOutOfRange {
+                            field: #name,
+                        }
+                    })?;
+                    ctx.check_collection_length(#name, count_u64)?;
+                    let mut items = Vec::new();
+                    items.try_reserve_exact(count).map_err(|source| {
+                        skrillax_serde::SerializationError::CollectionAllocationFailed {
+                            field: #name,
+                            elements: count_u64,
+                            source,
+                        }
+                    })?;
                     for _ in 0..count {
                         #item_read
                         items.push(#item);
