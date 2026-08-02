@@ -173,6 +173,7 @@ impl OutgoingPacket {
 /// partially constructed packet is returned.
 ///
 /// The incoming analog is [TryFromPacket].
+#[cfg(feature = "serde")]
 pub trait AsPacket {
     /// Serializes this value using `ctx` and constructs a packet ready for
     /// framing.
@@ -190,6 +191,7 @@ pub trait AsPacket {
 /// turn the contained data into a usable structure.
 ///
 /// The analog is [AsPacket].
+#[cfg(feature = "serde")]
 pub trait TryFromPacket {
     /// Tries to create `Self` from the given data. Unlike [AsPacket], we
     /// do not deal with the opcode here. It is expected that we have
