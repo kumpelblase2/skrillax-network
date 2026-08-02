@@ -8,6 +8,10 @@ crates for handling the network part of communication between a Silkroad Online 
 specifically deals with the security aspects of a Silkroad Online connection. In particular, the encryption used,
 the handshake as well as other security measures like checksum generation.
 
+Malformed peer handshake parameters are rejected with typed `SilkroadSecurityError` values. In particular,
+handshake moduli below 2 are rejected rather than reaching modular arithmetic, and full-range `u32` public values
+are handled without multiplication overflow.
+
 ## Documentation
 
 For documentation, please see the [docs.rs page](https://docs.rs/skrillax-security).

@@ -364,6 +364,9 @@ pub struct PassiveSecuritySetup<'a, T: AsyncRead + Unpin, S: AsyncWrite + Unpin>
 
 impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S> {
     /// Perform the handshake with the features decided by the active part.
+    ///
+    /// Malformed initial encryption parameters are returned as
+    /// [HandshakeError::SecurityError] before stream security state is enabled.
     pub async fn handle(
         reader: &mut SilkroadStreamRead<T>,
         writer: &mut SilkroadStreamWrite<S>,
@@ -386,6 +389,13 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S>
         if supports_checks != checks.is_some() {
             return Err(HandshakeError::InvalidContentFlag);
         }
+
+        let encryption_seed = capability.passive_encryption_init();
+        if supports_encryption != encryption_seed.is_some() {
+            return Err(HandshakeError::InvalidContentFlag);
+        }
+        let challenge = handshake.initialize(encryption_seed)?;
+
         if let Some(checks) = checks {
             let security_bytes = Arc::new(SecurityBytes::from_seeds(
                 checks.crc_seed,
@@ -393,12 +403,6 @@ impl<T: AsyncRead + Unpin, S: AsyncWrite + Unpin> PassiveSecuritySetup<'_, T, S>
             ));
             writer.enable_security_checks(security_bytes);
         }
-
-        let encryption_seed = capability.passive_encryption_init();
-        if supports_encryption != encryption_seed.is_some() {
-            return Err(HandshakeError::InvalidContentFlag);
-        }
-        let challenge = handshake.initialize(encryption_seed)?;
 
         if let Some((key, b)) = challenge {
             writer.write_packet(HandshakeChallenge { b, key }).await?;
@@ -506,6 +510,52 @@ mod test {
             assert_eq!(serialized.as_ref(), expected);
             assert_eq!(packet.byte_size(), expected.len());
         }
+    }
+
+    #[test]
+    fn challenge_and_acceptance_wire_layout_is_stable() {
+        use bytes::BytesMut;
+        use skrillax_serde::SerdeContext;
+
+        const VALUE_B: u32 = 0x4339_047a;
+        const PASSIVE_KEY: u64 = 0x6418_bb16_3fec_0269;
+        const ACTIVE_CHALLENGE: u64 = 0x267d_7919_d45e_6fbe;
+
+        let passive_challenge = HandshakeChallenge {
+            b: VALUE_B,
+            key: PASSIVE_KEY,
+        };
+        let mut serialized = BytesMut::new();
+        passive_challenge
+            .write_to_end(&mut serialized, &SerdeContext::default())
+            .unwrap();
+        let mut expected = VALUE_B.to_le_bytes().to_vec();
+        expected.extend_from_slice(&PASSIVE_KEY.to_le_bytes());
+        assert_eq!(serialized.as_ref(), expected);
+        assert_eq!(passive_challenge.byte_size(), expected.len());
+
+        let active_challenge = SecurityCapabilityCheck {
+            flag: HandshakeContent::FINISH,
+            challenge: Some(ACTIVE_CHALLENGE),
+            ..Default::default()
+        };
+        serialized.clear();
+        active_challenge
+            .write_to_end(&mut serialized, &SerdeContext::default())
+            .unwrap();
+        expected.clear();
+        expected.push(HandshakeContent::FINISH.bits());
+        expected.extend_from_slice(&ACTIVE_CHALLENGE.to_le_bytes());
+        assert_eq!(serialized.as_ref(), expected);
+        assert_eq!(active_challenge.byte_size(), expected.len());
+
+        let accepted = HandshakeAccepted;
+        serialized.clear();
+        accepted
+            .write_to_end(&mut serialized, &SerdeContext::default())
+            .unwrap();
+        assert!(serialized.is_empty());
+        assert_eq!(accepted.byte_size(), 0);
     }
 
     #[test]
@@ -630,6 +680,154 @@ mod test {
             .await
             .expect("active handshake timed out")
             .unwrap();
+    }
+
+    async fn assert_invalid_modulus_is_rejected_without_stream_mutation(modulus: u32) {
+        use tokio::time::{Duration, timeout};
+
+        let timeout_after = Duration::from_secs(5);
+        let listener = TcpSocket::new_v4().unwrap();
+        listener.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listen_addr = listener.local_addr().unwrap();
+        let listener = listener.listen(0).unwrap();
+        let passive_registry = PacketRegistry::builder()
+            .register_passive_handshake()
+            .build();
+        let active_registry = PacketRegistry::builder()
+            .register_active_handshake()
+            .build();
+
+        let passive = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let (mut reader, mut writer) = socket.into_silkroad_stream(passive_registry);
+            let error = PassiveSecuritySetup::handle(&mut reader, &mut writer)
+                .await
+                .expect_err("invalid modulus should reject the handshake");
+
+            assert!(matches!(
+                error,
+                HandshakeError::SecurityError(
+                    SilkroadSecurityError::InvalidHandshakeModulus {
+                        value,
+                        minimum: 2,
+                    }
+                ) if value == modulus
+            ));
+            assert!(reader.encryption().is_none());
+            assert!(writer.encryption().is_none());
+            assert!(reader.security_bytes().is_none());
+            assert!(writer.security_bytes().is_none());
+        });
+
+        let socket = TcpSocket::new_v4()
+            .unwrap()
+            .connect(listen_addr)
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = socket.into_silkroad_stream(active_registry);
+        writer
+            .write_packet(SecurityCapabilityCheck {
+                flag: initial_handshake_flag(true, true),
+                blowfish_seed: Some(0x0102_0304_0506_0708),
+                seed_count: Some(0x12),
+                seed_crc: Some(0x34),
+                handshake_init: Some(HandshakeInitialization {
+                    handshake_seed: 0x1112_1314_1516_1718,
+                    a: 5,
+                    b: modulus,
+                    c: 8,
+                }),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            timeout(timeout_after, reader.next_packet())
+                .await
+                .expect("invalid handshake connection did not close")
+                .is_err(),
+            "invalid initialization must not emit a challenge or acknowledgment"
+        );
+        timeout(timeout_after, passive)
+            .await
+            .expect("passive setup timed out")
+            .expect("passive setup task panicked");
+    }
+
+    #[tokio::test]
+    async fn invalid_moduli_are_rejected_without_stream_mutation() {
+        for modulus in [0, 1] {
+            assert_invalid_modulus_is_rejected_without_stream_mutation(modulus).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn full_range_peer_parameters_emit_a_challenge_without_panicking() {
+        use tokio::time::{Duration, timeout};
+
+        let timeout_after = Duration::from_secs(5);
+        let listener = TcpSocket::new_v4().unwrap();
+        listener.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listen_addr = listener.local_addr().unwrap();
+        let listener = listener.listen(0).unwrap();
+        let passive_registry = PacketRegistry::builder()
+            .register_passive_handshake()
+            .build();
+        let active_registry = PacketRegistry::builder()
+            .register_active_handshake()
+            .build();
+
+        let passive = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let (mut reader, mut writer) = socket.into_silkroad_stream(passive_registry);
+            let error = PassiveSecuritySetup::handle(&mut reader, &mut writer)
+                .await
+                .expect_err("peer closes before sending the active challenge");
+
+            assert!(matches!(error, HandshakeError::InputError(_)));
+            assert!(reader.encryption().is_none());
+            assert!(writer.encryption().is_none());
+            assert!(reader.security_bytes().is_none());
+            assert!(writer.security_bytes().is_some());
+        });
+
+        let socket = TcpSocket::new_v4()
+            .unwrap()
+            .connect(listen_addr)
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = socket.into_silkroad_stream(active_registry);
+        writer
+            .write_packet(SecurityCapabilityCheck {
+                flag: initial_handshake_flag(true, true),
+                blowfish_seed: Some(u64::MAX),
+                seed_count: Some(u32::MAX),
+                seed_crc: Some(u32::MAX),
+                handshake_init: Some(HandshakeInitialization {
+                    handshake_seed: u64::MAX,
+                    a: u32::MAX,
+                    b: u32::MAX,
+                    c: u32::MAX,
+                }),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        timeout(timeout_after, reader.next_packet())
+            .await
+            .expect("passive challenge timed out")
+            .expect("passive side should send a challenge")
+            .into_packet::<HandshakeChallenge>()
+            .expect("passive side should send the expected challenge packet");
+        drop(reader);
+        drop(writer);
+
+        timeout(timeout_after, passive)
+            .await
+            .expect("passive setup timed out after peer close")
+            .expect("passive setup task panicked");
     }
 
     #[tokio::test]

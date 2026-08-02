@@ -39,6 +39,7 @@ use blowfish::BlowfishLE;
 use blowfish::cipher::{BlockDecrypt, BlockEncrypt};
 use byteorder::{ByteOrder, LittleEndian};
 use rand::random;
+use std::num::NonZeroU32;
 
 bitflags! {
     /// Defines the available security features of a Silkroad Online connection.
@@ -56,11 +57,36 @@ impl Default for SecurityFeature {
     }
 }
 
+const MIN_HANDSHAKE_MODULUS: u32 = 2;
+
+#[derive(Copy, Clone, Debug)]
+struct HandshakeModulus(NonZeroU32);
+
+impl HandshakeModulus {
+    fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u32> for HandshakeModulus {
+    type Error = SilkroadSecurityError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match NonZeroU32::new(value) {
+            Some(value) if value.get() >= MIN_HANDSHAKE_MODULUS => Ok(Self(value)),
+            _ => Err(SilkroadSecurityError::InvalidHandshakeModulus {
+                value,
+                minimum: MIN_HANDSHAKE_MODULUS,
+            }),
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 struct ActiveEncryptionData {
     handshake_seed: u64,
     value_x: u32,
-    value_p: u32,
+    value_p: HandshakeModulus,
     value_a: u32,
 }
 
@@ -145,7 +171,8 @@ impl ActiveHandshake {
     /// client. This should later be followed by calling
     /// [start_challenge()][Self::start_challenge()] with the client response.
     /// The content of the [PassiveInitializationData] may vary depending on
-    /// the configured security features.
+    /// the configured security features. Generated encryption parameters
+    /// always contain a modulus in the inclusive range `2..=0x7fff_ffff`.
     ///
     /// If a handshake has already been started or completed, will return
     /// [SilkroadSecurityError::AlreadyInitialized].
@@ -166,10 +193,15 @@ impl ActiveHandshake {
         if features.contains(SecurityFeature::ENCRYPTION) {
             let seed = random::<u64>();
             let handshake_seed = random::<u64>();
-            let value_x = random::<u32>() & 0x7FFFFFFF;
-            let value_g = random::<u32>() & 0x7FFFFFFF;
-            let value_p = random::<u32>() & 0x7FFFFFFF;
-            let value_a = g_pow_x_mod_p(value_p.into(), value_x, value_g);
+            let value_x = random::<u32>() & 0x7fff_ffff;
+            let value_g = random::<u32>() & 0x7fff_ffff;
+            let value_p = loop {
+                let candidate = random::<u32>() & 0x7fff_ffff;
+                if let Ok(modulus) = HandshakeModulus::try_from(candidate) {
+                    break modulus;
+                }
+            };
+            let value_a = g_pow_x_mod_p(value_p, value_x, value_g);
             self.state = ActiveHandshakeState::HandshakeStarted {
                 encryption_seed: Some(ActiveEncryptionData {
                     handshake_seed,
@@ -187,7 +219,7 @@ impl ActiveHandshake {
                 encryption_seed: Some(PassiveEncryptionInitializationData {
                     seed,
                     handshake_seed,
-                    additional_seeds: [value_g, value_p, value_a],
+                    additional_seeds: [value_g, value_p.get(), value_a],
                 }),
             })
         } else {
@@ -224,7 +256,8 @@ impl ActiveHandshake {
     /// [initialize][Self::initialize()] hasn't been called,
     /// returns [SilkroadSecurityError::SecurityUninitialized]. If the passed
     /// key does not match the key we expected, will return
-    /// [SilkroadSecurityError::KeyExchangeMismatch].
+    /// [SilkroadSecurityError::KeyExchangeMismatch]. Every `u32` public value
+    /// is handled without overflowing handshake arithmetic.
     pub fn start_challenge(
         &mut self,
         value_b: u32,
@@ -238,11 +271,7 @@ impl ActiveHandshake {
             return Err(SilkroadSecurityError::SecurityUninitialized);
         };
 
-        let value_k = g_pow_x_mod_p(
-            encryption_setup.value_p.into(),
-            encryption_setup.value_x,
-            value_b,
-        );
+        let value_k = g_pow_x_mod_p(encryption_setup.value_p, encryption_setup.value_x, value_b);
         let new_key = to_u64(encryption_setup.value_a, value_b);
         let new_key = transform_key(new_key, value_k, LOBYTE(LOWORD(value_k)) & 0x03);
         let blowfish = blowfish_from_int(new_key);
@@ -373,7 +402,11 @@ impl PassiveHandshake {
     /// receive from the active part.
     ///
     /// This may error if we're already initialized, returning
-    /// [SilkroadSecurityError::InitializationUnfinished].
+    /// [SilkroadSecurityError::InitializationUnfinished]. A peer-supplied
+    /// modulus below 2 returns
+    /// [SilkroadSecurityError::InvalidHandshakeModulus]. Rejected parameters
+    /// do not advance the handshake state, so valid initialization can be
+    /// retried.
     pub fn initialize(
         &mut self,
         init: Option<PassiveEncryptionInitializationData>,
@@ -384,11 +417,11 @@ impl PassiveHandshake {
 
         let (encryption_data, challenge) = if let Some(encryption_setup) = &init {
             let value_g = encryption_setup.additional_seeds[0];
-            let value_p = encryption_setup.additional_seeds[1];
+            let value_p = HandshakeModulus::try_from(encryption_setup.additional_seeds[1])?;
             let value_a = encryption_setup.additional_seeds[2];
             let local_private = random::<u32>();
-            let remote_public = g_pow_x_mod_p(value_p as i64, local_private, value_g);
-            let shared_secret = g_pow_x_mod_p(value_p as i64, local_private, value_a);
+            let remote_public = g_pow_x_mod_p(value_p, local_private, value_g);
+            let shared_secret = g_pow_x_mod_p(value_p, local_private, value_a);
             let key = transform_key(
                 to_u64(value_a, remote_public),
                 shared_secret,
@@ -542,17 +575,19 @@ fn HIBYTE(a: u16) -> u8 {
     ((a >> 8) & 0xFF) as u8
 }
 
-fn g_pow_x_mod_p(p: i64, mut x: u32, g: u32) -> u32 {
-    let mut current: i64 = 1;
-    let mut mult: i64 = g as i64;
+fn g_pow_x_mod_p(p: HandshakeModulus, mut x: u32, g: u32) -> u32 {
+    let modulus = u128::from(p.get());
+    let mut current = 1_u128;
+    let mut mult = u128::from(g) % modulus;
 
     while x != 0 {
-        if (x & 1) > 0 {
-            current = (mult * current) % p;
+        if x & 1 == 1 {
+            current = (mult * current) % modulus;
         }
         x >>= 1;
-        mult = (mult * mult) % p;
+        mult = (mult * mult) % modulus;
     }
+
     current as u32
 }
 
@@ -565,45 +600,264 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_equal() {
-        let mut server_handshake = ActiveHandshake::default();
-        let mut client_handshake = PassiveHandshake::default();
+    fn rejects_zero_handshake_modulus() {
+        let error = HandshakeModulus::try_from(0).expect_err("zero modulus should be rejected");
 
-        let init = server_handshake
-            .initialize(SecurityFeature::all())
-            .expect("should be able to initialize");
-        assert!(init.encryption_seed.is_some());
-        assert!(init.checks.is_some());
-        let (key, value_b) = client_handshake
-            .initialize(init.encryption_seed)
-            .expect("should accept initialization")
-            .unwrap();
-        let response = server_handshake
-            .start_challenge(value_b, key)
-            .expect("should accept challenge");
-        client_handshake
-            .finish(response)
-            .expect("should do challenge");
-        let active_encryption = server_handshake
-            .finish()
-            .expect("server should be finished.")
-            .unwrap();
-        let passive_encryption = client_handshake
-            .done()
-            .expect("client should be finished.")
-            .unwrap();
+        assert!(matches!(
+            error,
+            SilkroadSecurityError::InvalidHandshakeModulus {
+                value: 0,
+                minimum: 2,
+            }
+        ));
+    }
 
-        let encrypted = active_encryption
-            .encrypt(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08])
-            .expect("Should be able to encrypt");
-
-        let decrypted = passive_encryption
-            .decrypt(&encrypted)
-            .expect("Should be able to decrypt");
-
+    #[test]
+    fn validates_handshake_modulus_boundaries() {
+        let error = HandshakeModulus::try_from(1).expect_err("modulus one should be rejected");
+        assert!(matches!(
+            error,
+            SilkroadSecurityError::InvalidHandshakeModulus {
+                value: 1,
+                minimum: 2,
+            }
+        ));
+        assert_eq!(HandshakeModulus::try_from(2).unwrap().get(), 2);
         assert_eq!(
-            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
-            decrypted.as_ref()
+            HandshakeModulus::try_from(0x7fff_ffff).unwrap().get(),
+            0x7fff_ffff
+        );
+    }
+
+    fn passive_initialization(modulus: u32) -> PassiveEncryptionInitializationData {
+        PassiveEncryptionInitializationData {
+            seed: 0x0102_0304_0506_0708,
+            handshake_seed: 0x1112_1314_1516_1718,
+            additional_seeds: [5, modulus, 8],
+        }
+    }
+
+    #[test]
+    fn rejected_passive_modulus_does_not_advance_handshake_state() {
+        for invalid_modulus in [0, 1] {
+            let mut passive = PassiveHandshake::default();
+            let error = passive
+                .initialize(Some(passive_initialization(invalid_modulus)))
+                .expect_err("invalid modulus should be rejected");
+
+            assert!(matches!(
+                error,
+                SilkroadSecurityError::InvalidHandshakeModulus {
+                    value,
+                    minimum: 2,
+                } if value == invalid_modulus
+            ));
+            assert!(
+                passive
+                    .initialize(None)
+                    .expect("handshake should remain retryable")
+                    .is_none()
+            );
+            assert!(
+                passive
+                    .done()
+                    .expect("empty retry should complete")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn passive_initialization_accepts_full_range_parameters() {
+        let mut passive = PassiveHandshake::default();
+        let challenge = passive
+            .initialize(Some(PassiveEncryptionInitializationData {
+                additional_seeds: [u32::MAX, u32::MAX, u32::MAX],
+                ..passive_initialization(u32::MAX)
+            }))
+            .expect("full-range parameters should not overflow");
+
+        assert!(challenge.is_some());
+    }
+
+    #[test]
+    fn security_feature_matrix_preserves_handshake_outcomes() {
+        for features in [
+            SecurityFeature::empty(),
+            SecurityFeature::CHECKS,
+            SecurityFeature::ENCRYPTION,
+            SecurityFeature::all(),
+        ] {
+            let encryption_enabled = features.contains(SecurityFeature::ENCRYPTION);
+            let checks_enabled = features.contains(SecurityFeature::CHECKS);
+            let mut active = ActiveHandshake::default();
+            let mut passive = PassiveHandshake::default();
+
+            let init = active
+                .initialize(features)
+                .expect("active handshake should initialize");
+            assert_eq!(init.encryption_seed.is_some(), encryption_enabled);
+            assert_eq!(init.checks.is_some(), checks_enabled);
+
+            let challenge = passive
+                .initialize(init.encryption_seed)
+                .expect("passive handshake should accept valid initialization");
+
+            if let Some((key, value_b)) = challenge {
+                let response = active
+                    .start_challenge(value_b, key)
+                    .expect("active handshake should accept the passive proof");
+                passive
+                    .finish(response)
+                    .expect("passive handshake should accept the active proof");
+
+                let active_encryption = active
+                    .finish()
+                    .expect("active handshake should finish")
+                    .expect("encryption should be established");
+                let passive_encryption = passive
+                    .done()
+                    .expect("passive handshake should finish")
+                    .expect("encryption should be established");
+                let plaintext = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+                let encrypted = active_encryption
+                    .encrypt(&plaintext)
+                    .expect("established encryption should encrypt");
+                let decrypted = passive_encryption
+                    .decrypt(&encrypted)
+                    .expect("established encryption should decrypt");
+
+                assert_eq!(decrypted.as_ref(), plaintext);
+            } else {
+                assert!(!encryption_enabled);
+                assert!(
+                    active
+                        .finish()
+                        .expect("unencrypted active handshake should finish")
+                        .is_none()
+                );
+                assert!(
+                    passive
+                        .done()
+                        .expect("unencrypted passive handshake should finish")
+                        .is_none()
+                );
+            }
+        }
+    }
+
+    fn reference_modular_exponentiation(modulus: u32, exponent: u32, base: u32) -> u32 {
+        let modulus = u128::from(modulus);
+        let mut exponent = exponent;
+        let mut base = u128::from(base) % modulus;
+        let mut result = 1_u128;
+
+        while exponent != 0 {
+            if exponent & 1 == 1 {
+                result = (result * base) % modulus;
+            }
+            exponent >>= 1;
+            base = (base * base) % modulus;
+        }
+
+        result as u32
+    }
+
+    #[test]
+    fn modular_exponentiation_handles_full_u32_range() {
+        for modulus in [2, u32::MAX] {
+            assert_eq!(
+                g_pow_x_mod_p(HandshakeModulus::try_from(modulus).unwrap(), 0, u32::MAX),
+                1,
+                "an exponent of zero should produce 1 mod {modulus}"
+            );
+        }
+
+        let modulus = HandshakeModulus::try_from(u32::MAX).unwrap();
+        assert_eq!(g_pow_x_mod_p(modulus, u32::MAX, 2), 0x8000_0000);
+        assert_eq!(
+            g_pow_x_mod_p(modulus, u32::MAX, u32::MAX),
+            0,
+            "a base equal to the modulus should reduce to zero"
+        );
+    }
+
+    #[test]
+    fn modular_exponentiation_matches_oracle_for_valid_legacy_domain() {
+        for (modulus, exponent, base, expected) in [
+            (23, 6, 5, 8),
+            (65_537, u32::MAX, 65_536, 65_536),
+            (0x7fff_ffff, u32::MAX, 0x7fff_fffe, 0x7fff_fffe),
+            (0x7fff_ffff, u32::MAX, 0x4000_0000, 0x1000_0000),
+            (0x7fff_ffff, 0x8000_0000, 0x7fff_ffff, 0),
+        ] {
+            assert_eq!(
+                g_pow_x_mod_p(HandshakeModulus::try_from(modulus).unwrap(), exponent, base),
+                expected
+            );
+        }
+
+        // Sample the ranges emitted by the existing active side at boundaries
+        // and representative exponent bit patterns.
+        let moduli = [2, 3, 17, 65_537, 0x7fff_ffff];
+        let exponents = [0, 1, 2, 31, 32, 0x8000_0000, u32::MAX];
+        let bases = [0, 1, 2, 3, 65_537, 0x4000_0000, 0x7fff_ffff];
+
+        for modulus in moduli {
+            for exponent in exponents {
+                for base in bases {
+                    assert_eq!(
+                        g_pow_x_mod_p(HandshakeModulus::try_from(modulus).unwrap(), exponent, base),
+                        reference_modular_exponentiation(modulus, exponent, base),
+                        "mismatch for {base}^{exponent} mod {modulus}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn active_initialization_always_emits_a_valid_modulus() {
+        for _ in 0..1_024 {
+            let mut active = ActiveHandshake::default();
+            let initialization = active
+                .initialize(SecurityFeature::ENCRYPTION)
+                .expect("active handshake should initialize")
+                .encryption_seed
+                .expect("encryption parameters should be present");
+            let modulus = initialization.additional_seeds[1];
+
+            assert!((2..=0x7fff_ffff).contains(&modulus));
+        }
+    }
+
+    #[test]
+    fn maximum_peer_challenge_value_does_not_overflow_or_advance_on_mismatch() {
+        let handshake_seed =
+            LittleEndian::read_u64(&[0xbf, 0x89, 0x96, 0x76, 0xae, 0x97, 0x5e, 0x17]);
+        let value_p = LittleEndian::read_u32(&[0x0d, 0xf4, 0x13, 0x52]);
+        let value_x = 189993144;
+        let value_a = LittleEndian::read_u32(&[0x36, 0x44, 0x96, 0x24]);
+        let mut active = ActiveHandshake::default();
+        active.initialize_with(Some(ActiveEncryptionData {
+            handshake_seed,
+            value_x,
+            value_p: HandshakeModulus::try_from(value_p).unwrap(),
+            value_a,
+        }));
+
+        assert!(matches!(
+            active.start_challenge(u32::MAX, 0),
+            Err(SilkroadSecurityError::KeyExchangeMismatch { .. })
+        ));
+
+        let value_b = LittleEndian::read_u32(&[0x7a, 0x04, 0x39, 0x43]);
+        let key = LittleEndian::read_u64(&[0x69, 0x02, 0xec, 0x3f, 0x16, 0xbb, 0x18, 0x64]);
+        assert_eq!(
+            active
+                .start_challenge(value_b, key)
+                .expect("a valid retry should still succeed"),
+            LittleEndian::read_u64(&[0xbe, 0x6f, 0x5e, 0xd4, 0x19, 0x79, 0x7d, 0x26])
         );
     }
 
@@ -620,7 +874,7 @@ mod test {
         security.initialize_with(Some(ActiveEncryptionData {
             handshake_seed,
             value_x,
-            value_p,
+            value_p: HandshakeModulus::try_from(value_p).unwrap(),
             value_a,
         }));
 

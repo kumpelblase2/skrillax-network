@@ -63,6 +63,10 @@ pub enum SilkroadSecurityError {
     /// in the handshake.
     #[error("Local calculated key was {calculated} but received {received}")]
     KeyExchangeMismatch { received: u64, calculated: u64 },
+    /// A peer supplied a modulus that cannot establish valid handshake key
+    /// material. Malformed peer parameters are reported rather than panicking.
+    #[error("handshake modulus {value} is below the minimum {minimum}")]
+    InvalidHandshakeModulus { value: u32, minimum: u32 },
 }
 
 const BLOWFISH_BLOCK_SIZE: usize = 8;
