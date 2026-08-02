@@ -4,7 +4,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use skrillax_codec::{MAX_MASSIVE_CONTAINER_INNER_SIZE, SilkroadFrame};
 use skrillax_packet::{
     AsFrames, AsPacket, FramingError, FromFrames, IncomingPacket, OutgoingPacket, Packet,
-    PacketError, SecurityContext,
+    PacketError, ReframingError, SecurityBytes, SecurityContext,
 };
 use skrillax_serde::{ByteSize, SerdeContext, SerializationError, Serialize};
 
@@ -74,6 +74,20 @@ fn assert_failing_massive_error(result: Result<OutgoingPacket, PacketError>) {
 
 fn payload(size: usize) -> Vec<u8> {
     (0..size).map(|index| (index % 251) as u8).collect()
+}
+
+fn secured_empty_massive_frames() -> (Vec<SilkroadFrame>, SecurityBytes) {
+    let sender_security = SecurityBytes::from_seeds(0x1234_5678, 0x9ABC_DEF0);
+    let receiver_security = SecurityBytes::from_seeds(0x1234_5678, 0x9ABC_DEF0);
+    let outgoing = OutgoingPacket::Massive {
+        opcode: RawMassive::ID,
+        packets: vec![],
+    };
+    let frames = outgoing
+        .as_frames(SecurityContext::new(None, Some(&sender_security)))
+        .expect("a zero-container massive packet should produce a header");
+
+    (frames, receiver_security)
 }
 
 fn boundary_cases() -> Vec<(usize, Vec<usize>)> {
@@ -150,6 +164,95 @@ fn assert_massive_round_trip(
 }
 
 #[test]
+fn zero_container_header_completes_empty_payload() {
+    let frame = SilkroadFrame::MassiveHeader {
+        count: 0,
+        crc: 0,
+        contained_opcode: RawMassive::ID,
+        contained_count: 0,
+    };
+
+    let incoming = IncomingPacket::from_frames(&[frame], SecurityContext::default())
+        .expect("a zero-container header should complete immediately");
+
+    assert_eq!(RawMassive::ID, incoming.opcode());
+    assert!(incoming.data().is_empty());
+}
+
+#[test]
+fn zero_container_header_does_not_append_undeclared_container() {
+    let frames = [
+        SilkroadFrame::MassiveHeader {
+            count: 0,
+            crc: 0,
+            contained_opcode: RawMassive::ID,
+            contained_count: 0,
+        },
+        SilkroadFrame::MassiveContainer {
+            count: 0,
+            crc: 0,
+            inner: Bytes::from_static(&[1, 2, 3]),
+        },
+    ];
+
+    let incoming = IncomingPacket::from_frames(&frames, SecurityContext::default())
+        .expect("the zero-container sequence should already be complete");
+
+    assert_eq!(RawMassive::ID, incoming.opcode());
+    assert!(incoming.data().is_empty());
+}
+
+#[test]
+fn manually_empty_massive_packet_round_trips() {
+    let outgoing = OutgoingPacket::Massive {
+        opcode: RawMassive::ID,
+        packets: vec![],
+    };
+
+    assert_massive_round_trip(outgoing, &[], &[]);
+}
+
+#[test]
+fn zero_container_header_counter_is_validated_before_completion() {
+    let (mut frames, receiver_security) = secured_empty_massive_frames();
+    let SilkroadFrame::MassiveHeader { count, .. } = &mut frames[0] else {
+        panic!("an empty massive packet should produce only a header");
+    };
+    *count = count.wrapping_add(1);
+
+    let result = IncomingPacket::from_frames(
+        &frames,
+        SecurityContext::new(None, Some(&receiver_security)),
+    );
+
+    assert!(matches!(
+        result,
+        Err(ReframingError::CounterCheckFailed { expected, received })
+            if expected != received
+    ));
+}
+
+#[test]
+fn zero_container_header_crc_is_validated_before_completion() {
+    let (mut frames, receiver_security) = secured_empty_massive_frames();
+    let SilkroadFrame::MassiveHeader { crc, .. } = &mut frames[0] else {
+        panic!("an empty massive packet should produce only a header");
+    };
+    *crc = crc.wrapping_add(1);
+
+    let result = IncomingPacket::from_frames(
+        &frames,
+        SecurityContext::new(None, Some(&receiver_security)),
+    );
+
+    assert!(matches!(
+        result,
+        Err(ReframingError::CrcCheckFailed { expected, received })
+            if expected != received
+    ));
+}
+
+#[test]
 fn single_massive_packet_preserves_boundary_payloads() {
     for (size, expected_container_sizes) in boundary_cases() {
         let expected = payload(size);
@@ -209,6 +312,45 @@ fn manually_constructed_oversized_massive_container_is_rejected() {
             actual,
             maximum: MAX_MASSIVE_CONTAINER_INNER_SIZE,
         }) if actual == MAX_MASSIVE_CONTAINER_INNER_SIZE + 1
+    ));
+}
+
+#[test]
+fn maximum_container_count_remains_incomplete_without_containers() {
+    let frame = SilkroadFrame::MassiveHeader {
+        count: 0,
+        crc: 0,
+        contained_opcode: RawMassive::ID,
+        contained_count: u16::MAX,
+    };
+
+    let result = IncomingPacket::from_frames(&[frame], SecurityContext::default());
+
+    assert!(matches!(
+        result,
+        Err(ReframingError::Incomplete(Some(remaining)))
+            if remaining == usize::from(u16::MAX)
+    ));
+}
+
+#[test]
+fn maximum_container_count_is_accepted_for_framing() {
+    let outgoing = OutgoingPacket::Massive {
+        opcode: RawMassive::ID,
+        packets: vec![Bytes::new(); usize::from(u16::MAX)],
+    };
+
+    let frames = outgoing
+        .as_frames(SecurityContext::default())
+        .expect("the full u16 container-count range should remain valid");
+
+    assert_eq!(usize::from(u16::MAX) + 1, frames.len());
+    assert!(matches!(
+        frames.first(),
+        Some(SilkroadFrame::MassiveHeader {
+            contained_count: u16::MAX,
+            ..
+        })
     ));
 }
 

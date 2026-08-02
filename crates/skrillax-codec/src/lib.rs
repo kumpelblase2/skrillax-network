@@ -69,10 +69,12 @@ fn find_encrypted_length(given_length: usize) -> usize {
 /// normal frame is the most common frame denoting a single operation using a
 /// specified opcode. This frame may be encrypted, causing everything but the
 /// length to require decrypting before being usable. Massive frames are used to
-/// bundle similar operations together. A massive header is sent first,
-/// containing the number of operations as well as their opcode, and is then
-/// followed by the specified number of containers, which now only contain the
-/// data. Thus, massive frames cannot be encrypted.
+/// carry a larger logical payload. A massive header is sent first, containing
+/// the number of following container frames as well as the logical packet's
+/// opcode, and is then followed by the specified number of containers, which
+/// contain the data. The container count does not describe how many application
+/// objects can be deserialized from that data. Massive frames cannot be
+/// encrypted.
 ///
 /// Every frame, including an encrypted frame, contains two additional bytes:
 /// a crc checksum and a cryptographically random count. The former is used
@@ -128,8 +130,10 @@ pub enum SilkroadFrame {
         encrypted_data: Bytes,
     },
     /// The header portion of a massive packet which contains information
-    /// that is necessary for the identification and usage of the followed
-    /// [SilkroadFrame::MassiveContainer] frame(s).
+    /// that is necessary for the identification and usage of the following
+    /// [SilkroadFrame::MassiveContainer] frame(s). `contained_count` is the
+    /// number of following container frames, not a count of application
+    /// objects.
     MassiveHeader {
         count: u8,
         crc: u8,
@@ -137,9 +141,8 @@ pub enum SilkroadFrame {
         contained_count: u16,
     },
     /// The data container portion of a massive packet. Must come after
-    /// a [SilkroadFrame::MassiveHeader]. Given the opcode and included
-    /// count specified in the header frame, contains the data for `n`
-    /// operations of the same opcode.
+    /// a [SilkroadFrame::MassiveHeader] and contributes data to the logical
+    /// payload identified by that header.
     MassiveContainer { count: u8, crc: u8, inner: Bytes },
 }
 
@@ -529,6 +532,25 @@ mod test {
             },
             packet
         );
+    }
+
+    #[test]
+    fn massive_header_count_round_trip_preserves_full_range() {
+        for contained_count in [0, u16::MAX] {
+            let frame = SilkroadFrame::MassiveHeader {
+                count: 0,
+                crc: 0,
+                contained_opcode: 0x42,
+                contained_count,
+            };
+            let wire = frame.serialize();
+
+            let (consumed, parsed) =
+                SilkroadFrame::parse(&wire).expect("a massive header count should round-trip");
+
+            assert_eq!(wire.len(), consumed);
+            assert_eq!(frame, parsed);
+        }
     }
 
     #[test]

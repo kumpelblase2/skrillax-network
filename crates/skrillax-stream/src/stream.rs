@@ -645,6 +645,64 @@ mod test {
     }
 
     #[tokio::test]
+    async fn zero_container_header_preserves_stream_synchronization() {
+        let zero_header = SilkroadFrame::MassiveHeader {
+            count: 0,
+            crc: 0,
+            contained_opcode: 0x1234,
+            contained_count: 0,
+        };
+        let following_frame = SilkroadFrame::Packet {
+            count: 0,
+            crc: 0,
+            opcode: 0x5678,
+            data: Bytes::from_static(&[1, 2, 3]),
+        };
+        let mut wire = zero_header.serialize().to_vec();
+        wire.extend_from_slice(&following_frame.serialize());
+        let mut reader = SilkroadStreamRead::new(
+            FramedRead::new(wire.as_slice(), SilkroadCodec),
+            PacketRegistry::builder().build(),
+            SharedState::new(),
+        );
+
+        let first = reader
+            .next()
+            .await
+            .expect("the zero-container header should complete immediately");
+        let second = reader
+            .next()
+            .await
+            .expect("the frame after the zero-container header should remain available");
+
+        assert_eq!((0x1234, Bytes::new()), first.consume());
+        assert_eq!((0x5678, Bytes::from_static(&[1, 2, 3])), second.consume());
+    }
+
+    #[tokio::test]
+    async fn zero_container_header_completes_before_eof() {
+        let wire = SilkroadFrame::MassiveHeader {
+            count: 0,
+            crc: 0,
+            contained_opcode: 0x1234,
+            contained_count: 0,
+        }
+        .serialize();
+        let mut reader = SilkroadStreamRead::new(
+            FramedRead::new(wire.as_ref(), SilkroadCodec),
+            PacketRegistry::builder().build(),
+            SharedState::new(),
+        );
+
+        let packet = reader
+            .next()
+            .await
+            .expect("the header should complete without waiting for another frame");
+
+        assert_eq!((0x1234, Bytes::new()), packet.consume());
+    }
+
+    #[tokio::test]
     pub async fn test_write_packet_to_stream() {
         let mut buffer: Vec<u8> = Vec::new();
         let mut writer = SilkroadStreamWrite::new(

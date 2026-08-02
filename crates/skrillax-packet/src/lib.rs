@@ -633,6 +633,10 @@ impl FromFrames for IncomingPacket {
                         }
                     }
 
+                    if *contained_count == 0 {
+                        return Ok(IncomingPacket::new(*contained_opcode, Bytes::new()));
+                    }
+
                     massive_information = Some(MassiveInfo {
                         opcode: *contained_opcode,
                         remaining: *contained_count,
@@ -643,7 +647,7 @@ impl FromFrames for IncomingPacket {
                         let mut current_buffer = massive_buffer.take().unwrap_or_default();
                         current_buffer.extend_from_slice(inner);
 
-                        massive.remaining = massive.remaining.saturating_sub(1);
+                        massive.remaining -= 1;
 
                         if let Some(checkers) = security.checkers() {
                             let expected_count = checkers.generate_count_byte();
