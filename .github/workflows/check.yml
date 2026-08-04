@@ -35,3 +35,12 @@ jobs:
         uses: actions/checkout@v6
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
+  deny-check:
+    runs-on: ubuntu-latest
+    name: cargo deny
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: stable
+          command: check

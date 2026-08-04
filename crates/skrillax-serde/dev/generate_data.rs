@@ -35,31 +35,33 @@ struct RootStruct {
 }
 
 fn generate_random_root() -> RootStruct {
-    let mut rng = rand::thread_rng();
-    let items_count = rng.gen_range(5..15);
+    let mut rng = rand::rng();
+    let items_count = rng.random_range(5..15);
     let mut items = Vec::with_capacity(items_count);
 
     for _ in 0..items_count {
         let sub_struct = SubStruct {
-            id: rng.r#gen(),
-            name: (0..rng.gen_range(5..20))
-                .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
+            id: rng.random(),
+            name: (0..rng.random_range(5..20))
+                .map(|_| rng.sample(rand::distr::Alphanumeric) as char)
                 .collect(),
-            data: (0..rng.gen_range(10..100)).map(|_| rng.r#gen()).collect(),
+            data: (0..rng.random_range(10..100))
+                .map(|_| rng.random())
+                .collect(),
         };
 
-        let sub_enum = if rng.gen_bool(0.5) {
-            SubEnum::VariantA(rng.r#gen())
+        let sub_enum = if rng.random_bool(0.5) {
+            SubEnum::VariantA(rng.random())
         } else {
             SubEnum::VariantB(
-                (0..rng.gen_range(5..20))
-                    .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
+                (0..rng.random_range(5..20))
+                    .map(|_| rng.sample(rand::distr::Alphanumeric) as char)
                     .collect(),
             )
         };
 
-        let flags_count = rng.gen_range(1..10);
-        let flags = (0..flags_count).map(|_| rng.r#gen()).collect();
+        let flags_count = rng.random_range(1..10);
+        let flags = (0..flags_count).map(|_| rng.random()).collect();
 
         items.push(NestedStruct {
             inner_struct: sub_struct,
@@ -69,7 +71,7 @@ fn generate_random_root() -> RootStruct {
     }
 
     RootStruct {
-        header: rng.r#gen(),
+        header: rng.random(),
         items,
         footer: "END_OF_PACKET".to_string(),
     }

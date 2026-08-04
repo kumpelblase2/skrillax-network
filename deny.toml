@@ -7,6 +7,7 @@ targets = [
     "x86_64-apple-darwin",
     "x86_64-pc-windows-msvc",
 ]
+all-features = true
 
 [advisories]
 unmaintained = "workspace"
@@ -36,3 +37,7 @@ deny = [
     { crate = "openssl", use-instead = "rustls" },
     { crate = "openssl-sys", use-instead = "rustls" },
 ]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
