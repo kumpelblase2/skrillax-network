@@ -29,6 +29,9 @@ pub enum FrameParseError {
     /// A massive frame does not contain its required mode byte.
     #[error("massive frame is missing its mode byte")]
     MissingMassiveMode,
+    /// A massive frame contains a mode outside the protocol-defined values.
+    #[error("invalid massive frame mode {mode}")]
+    InvalidMassiveMode { mode: u8 },
     /// A massive header does not contain all of its required fields.
     #[error("massive header requires at least 10 bytes, but only {actual} were provided")]
     MassiveHeaderTooShort { actual: usize },
@@ -220,25 +223,26 @@ impl SilkroadFrame {
 
         if opcode == MASSIVE_PACKET_OPCODE {
             let mode = *data.get(4).ok_or(FrameParseError::MissingMassiveMode)?;
-            if mode == MASSIVE_HEADER_MODE {
-                if data.len() < 10 {
-                    return Err(FrameParseError::MassiveHeaderTooShort { actual: data.len() });
-                }
-                // 1 == Header
-                let inner_amount = LittleEndian::read_u16(&data[5..7]);
-                let inner_opcode = LittleEndian::read_u16(&data[7..9]);
-                Ok(SilkroadFrame::MassiveHeader {
-                    count,
-                    crc,
-                    contained_opcode: inner_opcode,
-                    contained_count: inner_amount,
-                })
-            } else {
-                Ok(SilkroadFrame::MassiveContainer {
+            match mode {
+                MASSIVE_HEADER_MODE => {
+                    if data.len() < 10 {
+                        return Err(FrameParseError::MassiveHeaderTooShort { actual: data.len() });
+                    }
+                    let inner_amount = LittleEndian::read_u16(&data[5..7]);
+                    let inner_opcode = LittleEndian::read_u16(&data[7..9]);
+                    Ok(SilkroadFrame::MassiveHeader {
+                        count,
+                        crc,
+                        contained_opcode: inner_opcode,
+                        contained_count: inner_amount,
+                    })
+                },
+                MASSIVE_CONTAINER_MODE => Ok(SilkroadFrame::MassiveContainer {
                     count,
                     crc,
                     inner: Bytes::copy_from_slice(&data[5..]),
-                })
+                }),
+                mode => Err(FrameParseError::InvalidMassiveMode { mode }),
             }
         } else {
             Ok(SilkroadFrame::Packet {
@@ -446,6 +450,17 @@ mod test {
         let result = SilkroadFrame::parse(&data);
 
         assert_eq!(Err(FrameParseError::MissingMassiveMode), result);
+    }
+
+    #[test]
+    fn peer_massive_mode_outside_protocol_is_rejected() {
+        // A massive frame may only use mode 0 (container) or mode 1 (header).
+        // This peer frame uses mode 2 with one payload byte.
+        let wire = [0x02, 0x00, 0x0D, 0x60, 0x00, 0x00, 0x02, 0xAA];
+
+        let result = SilkroadFrame::parse(&wire);
+
+        assert_eq!(Err(FrameParseError::InvalidMassiveMode { mode: 2 }), result);
     }
 
     #[test]

@@ -587,6 +587,10 @@ impl FromFrames for IncomingPacket {
                     count,
                     crc,
                 } => {
+                    if massive_information.is_some() {
+                        return Err(ReframingError::MixedFrames);
+                    }
+
                     let required_frames = *contained_count as usize;
                     let remaining_frames = frames.len() - (i + 1);
                     if required_frames > remaining_frames {
@@ -784,6 +788,31 @@ impl<'a> SecurityContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_peer_massive_header_is_rejected() {
+        let frames = [
+            SilkroadFrame::MassiveHeader {
+                count: 0,
+                crc: 0,
+                contained_opcode: 0x4242,
+                contained_count: 1,
+            },
+            SilkroadFrame::MassiveHeader {
+                count: 0,
+                crc: 0,
+                contained_opcode: 0x4343,
+                contained_count: 0,
+            },
+        ];
+
+        let result = IncomingPacket::from_frames(&frames, SecurityContext::default());
+
+        assert!(
+            matches!(result, Err(ReframingError::MixedFrames)),
+            "a nested peer header must not replace an in-progress massive packet: {result:?}"
+        );
+    }
 
     #[test]
     fn malformed_encrypted_massive_frame_returns_parse_error() {
