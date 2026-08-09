@@ -142,7 +142,9 @@ fn assert_massive_round_trip(
 
     let mut parsed_frames = Vec::with_capacity(frames.len());
     for frame in &frames {
-        let wire = frame.serialize();
+        let wire = frame
+            .serialize()
+            .expect("a generated massive frame should be representable");
         let declared_length = u16::from_le_bytes([wire[0], wire[1]]);
         assert_eq!(0, declared_length & 0x8000);
         if let SilkroadFrame::MassiveContainer { inner, .. } = frame {
@@ -266,7 +268,9 @@ fn secured_massive_packet_round_trips() {
     let parsed_frames = frames
         .iter()
         .map(|frame| {
-            let wire = frame.serialize();
+            let wire = frame
+                .serialize()
+                .expect("a generated secured massive frame should be representable");
             SilkroadFrame::parse(&wire)
                 .map(|(_, parsed)| parsed)
                 .expect("generated massive frame should parse")

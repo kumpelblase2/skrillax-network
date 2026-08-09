@@ -17,6 +17,26 @@ use bytes::Buf;
 use bytes::{BufMut, Bytes, BytesMut};
 use thiserror::Error;
 
+/// An error encountered while encoding a [`SilkroadFrame`].
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[non_exhaustive]
+pub enum FrameEncodeError {
+    /// A frame's content length cannot fit in the 15-bit wire field.
+    #[error("frame content has {actual} bytes, but the maximum is {maximum}")]
+    ContentTooLarge { actual: usize, maximum: usize },
+    /// Encrypted bytes do not match the block-aligned size declared by the
+    /// frame.
+    #[error(
+        "encrypted content size {content_size} requires {expected} encrypted bytes, but {actual} \
+         were provided"
+    )]
+    EncryptedDataLengthMismatch {
+        content_size: usize,
+        expected: usize,
+        actual: usize,
+    },
+}
+
 /// An error encountered while parsing bytes into a [`SilkroadFrame`].
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum FrameParseError {
@@ -53,6 +73,51 @@ pub const MAX_FRAME_CONTENT_SIZE: usize = FRAME_CONTENT_LENGTH_MASK as usize;
 /// The largest payload a massive container can carry after its one-byte mode
 /// field.
 pub const MAX_MASSIVE_CONTAINER_INNER_SIZE: usize = MAX_FRAME_CONTENT_SIZE - 1;
+
+/// A frame content length proven to fit in the protocol's 15-bit wire field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameContentSize(u16);
+
+impl TryFrom<usize> for FrameContentSize {
+    type Error = FrameEncodeError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        if value > MAX_FRAME_CONTENT_SIZE {
+            return Err(FrameEncodeError::ContentTooLarge {
+                actual: value,
+                maximum: MAX_FRAME_CONTENT_SIZE,
+            });
+        }
+
+        let wire_value = u16::try_from(value).map_err(|_| FrameEncodeError::ContentTooLarge {
+            actual: value,
+            maximum: MAX_FRAME_CONTENT_SIZE,
+        })?;
+        Ok(Self(wire_value))
+    }
+}
+
+impl FrameContentSize {
+    /// Returns the checked wire value.
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+
+    /// Returns the checked value as a platform-sized integer.
+    pub const fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+
+    /// Returns the wire value with the encrypted-frame marker set.
+    pub const fn encrypted_wire_value(self) -> u16 {
+        self.0 | ENCRYPTED_FRAME_FLAG
+    }
+
+    /// Returns the block-aligned ciphertext length for this content size.
+    pub fn encrypted_data_len(self) -> usize {
+        find_encrypted_length(self.as_usize() + 4)
+    }
+}
 
 /// Find the nearest block-aligned length.
 ///
@@ -117,7 +182,8 @@ fn find_encrypted_length(given_length: usize) -> usize {
 ///     opcode: 1,
 ///     data: Bytes::new(),
 /// }
-/// .serialize();
+/// .serialize()
+/// .expect("the frame is representable");
 /// assert_eq!(bytes.as_ref(), &[0x00, 0x00, 0x01, 0x00, 0x00, 0x00]);
 /// ```
 #[derive(Eq, PartialEq, Debug)]
@@ -254,15 +320,15 @@ impl SilkroadFrame {
         }
     }
 
-    /// Computes the size that should be used for the length header field.
+    /// Computes the value represented by the 15-bit length header field.
     /// Depending on the type of frame, this is either:
-    /// - The size of the contained data (basic frame)
-    /// - Encrypted size without a header, but possibly padding (encrypted
-    ///   frame)
+    /// - The application payload size (basic frame)
+    /// - The unpadded application payload size, excluding the encrypted opcode,
+    ///   count, and CRC fields (encrypted frame)
     /// - A fixed size (massive header frame)
-    /// - Container and data size (massive container frame)
-    pub fn content_size(&self) -> usize {
-        match &self {
+    /// - The mode byte and payload size (massive container frame)
+    pub fn content_size(&self) -> Result<FrameContentSize, FrameEncodeError> {
+        let size = match &self {
             SilkroadFrame::Packet { data, .. } => data.len(),
             SilkroadFrame::Encrypted { content_size, .. } => *content_size,
             SilkroadFrame::MassiveHeader { .. } => {
@@ -272,24 +338,54 @@ impl SilkroadFrame {
                 6
             },
             SilkroadFrame::MassiveContainer { inner, .. } => {
-                // 1 at the start to denote that this is a container packet
-                // 1 in each content to denote there's more
-                1 + inner.len()
+                inner
+                    .len()
+                    .checked_add(1)
+                    .ok_or(FrameEncodeError::ContentTooLarge {
+                        actual: usize::MAX,
+                        maximum: MAX_FRAME_CONTENT_SIZE,
+                    })?
             },
-        }
+        };
+
+        FrameContentSize::try_from(size)
     }
 
-    /// Computes the total size of the network packet for this frame.
-    /// This is different from [Self::content_size] as it includes
-    /// the size of the header as well as the correct size for
-    /// encrypted packets.
-    pub fn packet_size(&self) -> usize {
-        match self {
-            SilkroadFrame::Encrypted { content_size, .. } => {
-                find_encrypted_length(*content_size + 4) + 2
-            },
-            _ => 6 + self.content_size(),
+    fn validated_content_size(&self) -> Result<FrameContentSize, FrameEncodeError> {
+        let content_size = self.content_size()?;
+        if let SilkroadFrame::Encrypted {
+            content_size: declared_content_size,
+            encrypted_data,
+        } = self
+        {
+            let expected = content_size.encrypted_data_len();
+            if encrypted_data.len() != expected {
+                return Err(FrameEncodeError::EncryptedDataLengthMismatch {
+                    content_size: *declared_content_size,
+                    expected,
+                    actual: encrypted_data.len(),
+                });
+            }
         }
+
+        Ok(content_size)
+    }
+
+    /// Validates that this frame has a representable length and coherent shape.
+    pub fn validate(&self) -> Result<(), FrameEncodeError> {
+        self.validated_content_size().map(|_| ())
+    }
+
+    /// Computes the total encoded size of this frame.
+    ///
+    /// This includes the length header and, for encrypted frames, the fixed
+    /// encrypted fields and block padding.
+    pub fn packet_size(&self) -> Result<usize, FrameEncodeError> {
+        let content_size = self.validated_content_size()?;
+        Ok(match self {
+            SilkroadFrame::Encrypted { .. } => content_size.encrypted_data_len() + 2,
+            _ => 6 + content_size.as_usize(),
+        })
     }
 
     /// Tries to fetch the opcode of the frame, unless the packet
@@ -302,11 +398,17 @@ impl SilkroadFrame {
         }
     }
 
-    /// Tries to serialize this frame into a byte stream. It will allocate
-    /// a buffer that matches the packet size into which it will serialize
-    /// itself.
-    pub fn serialize(&self) -> Bytes {
-        let mut output = BytesMut::with_capacity(self.packet_size());
+    /// Tries to serialize this frame into a byte stream.
+    ///
+    /// Frames whose content length cannot be represented by the protocol's
+    /// 15-bit length field are rejected before any output is produced.
+    pub fn serialize(&self) -> Result<Bytes, FrameEncodeError> {
+        let content_size = self.validated_content_size()?;
+        let packet_size = match self {
+            SilkroadFrame::Encrypted { .. } => content_size.encrypted_data_len() + 2,
+            _ => 6 + content_size.as_usize(),
+        };
+        let mut output = BytesMut::with_capacity(packet_size);
 
         match &self {
             SilkroadFrame::Packet {
@@ -315,17 +417,14 @@ impl SilkroadFrame {
                 opcode,
                 data,
             } => {
-                output.put_u16_le(self.content_size() as u16);
+                output.put_u16_le(content_size.get());
                 output.put_u16_le(*opcode);
                 output.put_u8(*count);
                 output.put_u8(*crc);
                 output.put_slice(data);
             },
-            SilkroadFrame::Encrypted {
-                content_size,
-                encrypted_data,
-            } => {
-                output.put_u16_le((*content_size as u16) | ENCRYPTED_FRAME_FLAG);
+            SilkroadFrame::Encrypted { encrypted_data, .. } => {
+                output.put_u16_le(content_size.encrypted_wire_value());
                 output.put_slice(encrypted_data);
             },
             SilkroadFrame::MassiveHeader {
@@ -334,7 +433,7 @@ impl SilkroadFrame {
                 contained_opcode,
                 contained_count,
             } => {
-                output.put_u16_le(self.content_size() as u16);
+                output.put_u16_le(content_size.get());
                 output.put_u16_le(MASSIVE_PACKET_OPCODE);
                 output.put_u8(*count);
                 output.put_u8(*crc);
@@ -344,7 +443,7 @@ impl SilkroadFrame {
                 output.put_u8(0);
             },
             SilkroadFrame::MassiveContainer { count, crc, inner } => {
-                output.put_u16_le(self.content_size() as u16);
+                output.put_u16_le(content_size.get());
                 output.put_u16_le(MASSIVE_PACKET_OPCODE);
                 output.put_u8(*count);
                 output.put_u8(*crc);
@@ -353,7 +452,7 @@ impl SilkroadFrame {
             },
         }
 
-        output.freeze()
+        Ok(output.freeze())
     }
 }
 
@@ -377,7 +476,9 @@ mod codec {
         type Error = io::Error;
 
         fn encode(&mut self, item: SilkroadFrame, dst: &mut BytesMut) -> Result<(), Self::Error> {
-            let bytes = item.serialize();
+            let bytes = item
+                .serialize()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
             dst.extend_from_slice(&bytes);
             Ok(())
         }
@@ -402,9 +503,14 @@ mod codec {
 
 #[cfg(test)]
 mod test {
-    use crate::{FrameParseError, SilkroadCodec, SilkroadFrame};
-    use bytes::{Bytes, BytesMut};
-    use tokio_util::codec::Decoder;
+    #[cfg(feature = "codec")]
+    use crate::SilkroadCodec;
+    use crate::{FrameEncodeError, FrameParseError, MAX_FRAME_CONTENT_SIZE, SilkroadFrame};
+    use bytes::Bytes;
+    #[cfg(feature = "codec")]
+    use bytes::BytesMut;
+    #[cfg(feature = "codec")]
+    use tokio_util::codec::{Decoder, Encoder};
 
     #[test]
     fn test_parse_empty() {
@@ -563,7 +669,9 @@ mod test {
                 contained_opcode: 0x42,
                 contained_count,
             };
-            let wire = frame.serialize();
+            let wire = frame
+                .serialize()
+                .expect("a massive header should be representable");
 
             let (consumed, parsed) =
                 SilkroadFrame::parse(&wire).expect("a massive header count should round-trip");
@@ -573,6 +681,7 @@ mod test {
         }
     }
 
+    #[cfg(feature = "codec")]
     #[test]
     fn test_decoder() {
         let mut codec = SilkroadCodec;
@@ -594,6 +703,7 @@ mod test {
         );
     }
 
+    #[cfg(feature = "codec")]
     #[test]
     fn test_decoder_rejects_malformed_frame() {
         let mut codec = SilkroadCodec;
@@ -614,8 +724,71 @@ mod test {
             opcode: 0,
             data: Bytes::new(),
         }
-        .serialize();
+        .serialize()
+        .expect("an empty frame should be representable");
         assert_eq!(data.as_ref(), &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn maximum_plain_frame_length_round_trips_without_setting_encryption_flag() {
+        let frame = SilkroadFrame::Packet {
+            count: 7,
+            crc: 9,
+            opcode: 0x1234,
+            data: Bytes::from(vec![0xAB; MAX_FRAME_CONTENT_SIZE]),
+        };
+
+        let wire = frame
+            .serialize()
+            .expect("the maximum 15-bit content length is representable");
+        let (consumed, decoded) =
+            SilkroadFrame::parse(&wire).expect("the maximum plain frame should parse");
+
+        assert_eq!([0xFF, 0x7F], wire[..2]);
+        assert_eq!(wire.len(), consumed);
+        assert_eq!(frame, decoded);
+    }
+
+    #[test]
+    fn oversized_plain_frame_is_rejected() {
+        let frame = SilkroadFrame::Packet {
+            count: 0,
+            crc: 0,
+            opcode: 0x1234,
+            data: Bytes::from(vec![0; MAX_FRAME_CONTENT_SIZE + 1]),
+        };
+
+        let error = frame
+            .serialize()
+            .expect_err("a plain frame cannot use the encryption marker as length");
+
+        assert_eq!(
+            FrameEncodeError::ContentTooLarge {
+                actual: MAX_FRAME_CONTENT_SIZE + 1,
+                maximum: MAX_FRAME_CONTENT_SIZE,
+            },
+            error
+        );
+    }
+
+    #[cfg(feature = "codec")]
+    #[test]
+    fn codec_rejection_does_not_modify_the_destination_buffer() {
+        let frame = SilkroadFrame::Packet {
+            count: 0,
+            crc: 0,
+            opcode: 0x1234,
+            data: Bytes::from(vec![0; MAX_FRAME_CONTENT_SIZE + 1]),
+        };
+        let mut codec = SilkroadCodec;
+        let mut destination = BytesMut::from(&b"canary"[..]);
+
+        let error = codec
+            .encode(frame, &mut destination)
+            .expect_err("the codec must reject an unrepresentable frame");
+
+        assert_eq!(std::io::ErrorKind::InvalidInput, error.kind());
+        assert_eq!(&b"canary"[..], destination.as_ref());
     }
 
     #[test]
@@ -624,10 +797,60 @@ mod test {
             content_size: 0,
             encrypted_data: Bytes::from_static(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
         }
-        .serialize();
+        .serialize()
+        .expect("an empty encrypted frame should be representable");
         assert_eq!(
             data.as_ref(),
             &[0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn encrypted_frame_with_mismatched_ciphertext_length_is_rejected() {
+        for actual in [7, 16] {
+            let frame = SilkroadFrame::Encrypted {
+                content_size: 1,
+                encrypted_data: Bytes::from(vec![0; actual]),
+            };
+
+            let expected_error = FrameEncodeError::EncryptedDataLengthMismatch {
+                content_size: 1,
+                expected: 8,
+                actual,
+            };
+
+            assert_eq!(
+                expected_error,
+                frame
+                    .packet_size()
+                    .expect_err("an invalid frame has no encoded packet size")
+            );
+            assert_eq!(
+                expected_error,
+                frame
+                    .serialize()
+                    .expect_err("ciphertext must match the padded encrypted content length")
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_encrypted_frame_is_rejected() {
+        let frame = SilkroadFrame::Encrypted {
+            content_size: MAX_FRAME_CONTENT_SIZE + 1,
+            encrypted_data: Bytes::new(),
+        };
+
+        let error = frame
+            .serialize()
+            .expect_err("encrypted content must fit the 15-bit length field");
+
+        assert_eq!(
+            FrameEncodeError::ContentTooLarge {
+                actual: MAX_FRAME_CONTENT_SIZE + 1,
+                maximum: MAX_FRAME_CONTENT_SIZE,
+            },
+            error
         );
     }
 
@@ -639,7 +862,8 @@ mod test {
             contained_opcode: 0x42,
             contained_count: 1,
         }
-        .serialize();
+        .serialize()
+        .expect("a massive header should be representable");
         assert_eq!(
             data.as_ref(),
             &[
@@ -652,7 +876,8 @@ mod test {
             crc: 0,
             inner: Bytes::new(),
         }
-        .serialize();
+        .serialize()
+        .expect("an empty massive container should be representable");
         assert_eq!(data.as_ref(), &[0x01, 0x00, 0x0D, 0x60, 0x00, 0x00, 0x00]);
     }
 }

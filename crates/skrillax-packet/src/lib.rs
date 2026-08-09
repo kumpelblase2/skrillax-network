@@ -58,8 +58,8 @@
 
 use bytes::{BufMut, Bytes, BytesMut};
 use skrillax_codec::{
-    FrameParseError, MASSIVE_CONTAINER_MODE, MASSIVE_HEADER_MODE, MASSIVE_PACKET_OPCODE,
-    MAX_MASSIVE_CONTAINER_INNER_SIZE, SilkroadFrame,
+    FrameContentSize, FrameEncodeError, FrameParseError, MASSIVE_CONTAINER_MODE,
+    MASSIVE_HEADER_MODE, MASSIVE_PACKET_OPCODE, MAX_MASSIVE_CONTAINER_INNER_SIZE, SilkroadFrame,
 };
 use skrillax_security::handshake::CheckBytesInitialization;
 use skrillax_security::{Checksum, ChecksumBuilder, MessageCounter, SilkroadEncryption};
@@ -287,6 +287,8 @@ where
 pub enum FramingError {
     #[error("Tried to create an encrypted frame but no encrypted was set up")]
     MissingEncryption,
+    #[error(transparent)]
+    FrameEncoding(#[from] FrameEncodeError),
     #[error("Massive container payload has {actual} bytes, but the maximum is {maximum} bytes")]
     MassiveContainerTooLarge { actual: usize, maximum: usize },
     #[error("Massive packet has {actual} containers, but the maximum is {maximum}")]
@@ -311,6 +313,7 @@ impl AsFrames for OutgoingPacket {
     fn as_frames(&self, context: SecurityContext) -> Result<Vec<SilkroadFrame>, FramingError> {
         match self {
             OutgoingPacket::Encrypted { opcode, data } => {
+                let frame_content_size = FrameContentSize::try_from(data.len())?;
                 let Some(encryption) = context.encryption() else {
                     return Err(FramingError::MissingEncryption);
                 };
@@ -318,8 +321,8 @@ impl AsFrames for OutgoingPacket {
                     .checkers()
                     .map(|check| check.generate_count_byte())
                     .unwrap_or(0);
-                let content_length = data.len() + 4;
-                let length_with_padding = SilkroadEncryption::find_encrypted_length(content_length);
+                let content_length = frame_content_size.as_usize() + 4;
+                let length_with_padding = frame_content_size.encrypted_data_len();
                 let mut new_buffer = BytesMut::with_capacity(length_with_padding);
                 new_buffer.put_u16_le(*opcode);
                 new_buffer.put_u8(count);
@@ -330,7 +333,8 @@ impl AsFrames for OutgoingPacket {
                     .checkers()
                     .map(|checkers| checkers.checksum_builder())
                 {
-                    checksum_builder.update(&(data.len() as u16 | 0x8000).to_le_bytes());
+                    checksum_builder
+                        .update(&frame_content_size.encrypted_wire_value().to_le_bytes());
                     checksum_builder.update(&new_buffer);
                     new_buffer[3] = checksum_builder.digest();
                 }
@@ -343,11 +347,12 @@ impl AsFrames for OutgoingPacket {
                     .encrypt_mut(&mut new_buffer)
                     .expect("Should be able to encrypt");
                 Ok(vec![SilkroadFrame::Encrypted {
-                    content_size: data.len(),
+                    content_size: frame_content_size.as_usize(),
                     encrypted_data: new_buffer.freeze(),
                 }])
             },
             OutgoingPacket::Simple { opcode, data } => {
+                let content_size = FrameContentSize::try_from(data.len())?;
                 let count = context
                     .checkers()
                     .map(|check| check.generate_count_byte())
@@ -356,7 +361,7 @@ impl AsFrames for OutgoingPacket {
                     .checkers()
                     .map(|checkers| checkers.checksum_builder())
                 {
-                    checksum_builder.update(&(data.len() as u16).to_le_bytes());
+                    checksum_builder.update(&content_size.get().to_le_bytes());
                     checksum_builder.update(&opcode.to_le_bytes());
                     checksum_builder.update_byte(count);
                     checksum_builder.update_byte(0);

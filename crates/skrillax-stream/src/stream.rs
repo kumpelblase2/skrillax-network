@@ -30,9 +30,8 @@ pub enum OutStreamError {
     /// transport layer was disconnected or otherwise impaired.
     #[error("Some IO level error occurred")]
     IoError(#[from] io::Error),
-    /// Something went wrong when trying to create frame(s) for the packet.
-    /// This currently can only happen if an encrypted frame is supposed to
-    /// be built, but no encryption has been configured.
+    /// Something went wrong when trying to create frame(s) for the packet,
+    /// such as missing encryption or an unrepresentable frame length.
     #[error("Error occurred when trying to create frames")]
     Framing(#[from] FramingError),
     /// Packet construction failed, including serialization errors. This occurs
@@ -309,11 +308,12 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
     }
 
     pub async fn write(&mut self, packet: OutgoingPacket) -> Result<(), OutStreamError> {
-        self.state.set_last_sent(packet.opcode());
+        let opcode = packet.opcode();
         let frames = packet.as_frames(self.security_context())?;
         for frame in frames {
             self.writer.send(frame).await?;
         }
+        self.state.set_last_sent(opcode);
         Ok(())
     }
 
@@ -567,11 +567,41 @@ where
 mod test {
     use super::*;
     use bytes::BytesMut;
+    use skrillax_codec::{FrameEncodeError, MAX_FRAME_CONTENT_SIZE};
     use skrillax_serde::{ByteSize, Deserialize, SerializationError, Serialize};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Copy, Clone, Default)]
     struct CustomFlag(u8);
+
+    struct FailingWrite;
+
+    impl AsyncWrite for FailingWrite {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &[u8],
+        ) -> std::task::Poll<Result<usize, io::Error>> {
+            std::task::Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "test transport is closed",
+            )))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), io::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), io::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
 
     #[derive(Packet, Deserialize, Serialize, ByteSize)]
     #[packet(opcode = 0x0042)]
@@ -658,8 +688,15 @@ mod test {
             opcode: 0x5678,
             data: Bytes::from_static(&[1, 2, 3]),
         };
-        let mut wire = zero_header.serialize().to_vec();
-        wire.extend_from_slice(&following_frame.serialize());
+        let mut wire = zero_header
+            .serialize()
+            .expect("the zero-container header should be representable")
+            .to_vec();
+        wire.extend_from_slice(
+            &following_frame
+                .serialize()
+                .expect("the following frame should be representable"),
+        );
         let mut reader = SilkroadStreamRead::new(
             FramedRead::new(wire.as_slice(), SilkroadCodec),
             PacketRegistry::builder().build(),
@@ -687,7 +724,8 @@ mod test {
             contained_opcode: 0x1234,
             contained_count: 0,
         }
-        .serialize();
+        .serialize()
+        .expect("the zero-container header should be representable");
         let mut reader = SilkroadStreamRead::new(
             FramedRead::new(wire.as_ref(), SilkroadCodec),
             PacketRegistry::builder().build(),
@@ -760,6 +798,55 @@ mod test {
         assert!(!frame_callback_called.load(Ordering::SeqCst));
         drop(writer);
         assert!(buffer.is_empty());
+    }
+
+    #[tokio::test]
+    async fn framing_failure_emits_nothing_and_does_not_update_last_sent() {
+        let mut buffer = Vec::new();
+        let mut writer = SilkroadStreamWrite::new(
+            FramedWrite::new(&mut buffer, SilkroadCodec),
+            PacketRegistry::builder().build(),
+            SharedState::new(),
+        );
+        let packet = OutgoingPacket::Simple {
+            opcode: 0x1234,
+            data: Bytes::from(vec![0; MAX_FRAME_CONTENT_SIZE + 1]),
+        };
+
+        let error = writer
+            .write(packet)
+            .await
+            .expect_err("an oversized packet should fail during framing");
+
+        assert!(matches!(
+            error,
+            OutStreamError::Framing(FramingError::FrameEncoding(
+                FrameEncodeError::ContentTooLarge { .. }
+            ))
+        ));
+        assert!(writer.context().get::<LastSentPacket>().is_none());
+        drop(writer);
+        assert!(buffer.is_empty());
+    }
+
+    #[tokio::test]
+    async fn transport_failure_does_not_update_last_sent() {
+        let mut writer = SilkroadStreamWrite::new(
+            FramedWrite::new(FailingWrite, SilkroadCodec),
+            PacketRegistry::builder().build(),
+            SharedState::new(),
+        );
+
+        let error = writer
+            .write(OutgoingPacket::Simple {
+                opcode: 0x1234,
+                data: Bytes::new(),
+            })
+            .await
+            .expect_err("a closed transport should reject the write");
+
+        assert!(matches!(error, OutStreamError::IoError(_)));
+        assert!(writer.context().get::<LastSentPacket>().is_none());
     }
 
     #[tokio::test]
