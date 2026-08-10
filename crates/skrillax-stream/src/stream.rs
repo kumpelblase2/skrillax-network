@@ -4,8 +4,8 @@ use bytes::Bytes;
 use futures::{SinkExt, Stream, StreamExt};
 use skrillax_codec::{SilkroadCodec, SilkroadFrame};
 use skrillax_packet::{
-    AsFrames, FramingError, FromFrames, IncomingPacket, OutgoingPacket, Packet, PacketError,
-    ReframingError, SecurityBytes, SecurityContext,
+    AsFrames, FramingError, IncomingPacket, IncomingPacketReframer, OutgoingPacket, Packet,
+    PacketError, ReframingError, ReframingLimits, SecurityBytes, SecurityContext,
 };
 use skrillax_security::SilkroadEncryption;
 use skrillax_serde::SerdeContext;
@@ -62,6 +62,10 @@ pub enum InStreamError {
     PacketError(#[from] PacketError),
     #[error("Error when trying to turn frames into packets")]
     ReframingError(#[from] ReframingError),
+    /// A previous reframing failure consumed part of a logical packet, so the
+    /// stream can no longer recover packet boundaries safely.
+    #[error("The incoming stream cannot continue after a reframing failure")]
+    ReframingTerminated,
     /// The end of the stream was reached, but we expected more data.
     #[error("Reached the end of the stream")]
     EndOfStream,
@@ -473,6 +477,9 @@ pub struct SilkroadStreamRead<T: AsyncRead + Unpin> {
     state: SharedState,
     unconsumed: Option<(u16, Bytes)>,
     read_callbacks: ReadCallbacks,
+    reframing_limits: ReframingLimits,
+    reframer: Option<IncomingPacketReframer>,
+    reframing_failed: bool,
 }
 
 impl<T: AsyncRead + Unpin> SilkroadStreamRead<T>
@@ -490,6 +497,9 @@ where
             registry,
             unconsumed: None,
             read_callbacks: ReadCallbacks::default(),
+            reframing_limits: ReframingLimits::default(),
+            reframer: None,
+            reframing_failed: false,
         }
     }
 
@@ -511,7 +521,29 @@ where
             },
             unconsumed: None,
             read_callbacks: ReadCallbacks::default(),
+            reframing_limits: ReframingLimits::recommended(),
+            reframer: None,
+            reframing_failed: false,
         }
+    }
+
+    /// Sets the receiver policy used for subsequent logical packets.
+    ///
+    /// Limits apply while frames are combined, before a massive payload is
+    /// fully accumulated. They do not apply retroactively to a payload already
+    /// retained in `next_packet`'s unconsumed buffer.
+    pub fn set_reframing_limits(&mut self, limits: ReframingLimits) {
+        self.reframing_limits = limits;
+    }
+
+    /// Returns the active logical-packet reframing policy.
+    pub const fn reframing_limits(&self) -> ReframingLimits {
+        self.reframing_limits
+    }
+
+    /// Restores unlimited logical-packet reframing.
+    pub fn clear_reframing_limits(&mut self) {
+        self.reframing_limits = ReframingLimits::unlimited();
     }
 
     /// Enables encryption for this stream.
@@ -583,27 +615,44 @@ where
     /// split that into the individual operations because we don't know the
     /// length of those operations.
     ///
+    /// Frame-count and payload-byte limits configured through
+    /// [`SilkroadStreamRead::set_reframing_limits`] are enforced incrementally
+    /// while performing this merge. A limit error is terminal for the logical
+    /// stream because unread massive containers remain on the transport.
+    ///
     /// This should only be necessary if you're not interested in actual packet
     /// data or work really generically. Otherwise,
     /// [SilkroadStreamRead::next_packet] should be used instead.
     pub async fn next(&mut self) -> Result<IncomingPacket, InStreamError> {
-        let mut buffer = Vec::new();
-        let mut remaining = 1usize;
+        if self.reframing_failed {
+            return Err(InStreamError::ReframingTerminated);
+        }
+
+        if self.reframer.is_none() {
+            self.reframer = Some(IncomingPacketReframer::new(self.reframing_limits));
+        }
+
         while let Some(res) = self.reader.next().await {
             let frame = res?;
-            buffer.push(frame);
-            remaining -= 1;
-            if remaining == 0 {
-                match IncomingPacket::from_frames(&buffer, self.security_context()) {
-                    Ok(packet) => {
-                        self.read_callbacks.call_for_frame(&packet, &self.context());
-                        return Ok(packet);
-                    },
-                    Err(ReframingError::Incomplete(required)) => {
-                        remaining += required.unwrap_or(1);
-                    },
-                    Err(e) => return Err(InStreamError::ReframingError(e)),
-                }
+            let security = SecurityContext::new(
+                self.state.encryption.as_deref(),
+                self.state.security_bytes.as_deref(),
+            );
+            let Some(reframer) = self.reframer.as_mut() else {
+                return Err(InStreamError::ReframingTerminated);
+            };
+            match reframer.push(&frame, security) {
+                Ok(Some(packet)) => {
+                    self.reframer = None;
+                    self.read_callbacks.call_for_frame(&packet, &self.context());
+                    return Ok(packet);
+                },
+                Ok(None) => {},
+                Err(error) => {
+                    self.reframer = None;
+                    self.reframing_failed = true;
+                    return Err(InStreamError::ReframingError(error));
+                },
             }
         }
 
@@ -652,6 +701,43 @@ mod test {
     struct CustomFlag(u8);
 
     struct FailingWrite;
+
+    struct YieldOnceRead {
+        data: Vec<u8>,
+        split_at: usize,
+        position: usize,
+        yielded_pending: bool,
+    }
+
+    impl AsyncRead for YieldOnceRead {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<Result<(), io::Error>> {
+            if self.position == self.split_at && !self.yielded_pending {
+                self.yielded_pending = true;
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+
+            if self.position == self.data.len() {
+                return std::task::Poll::Ready(Ok(()));
+            }
+
+            let section_end = if self.position < self.split_at {
+                self.split_at
+            } else {
+                self.data.len()
+            };
+            let available = section_end - self.position;
+            let copied = available.min(buffer.remaining());
+            let end = self.position + copied;
+            buffer.put_slice(&self.data[self.position..end]);
+            self.position = end;
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
 
     impl AsyncWrite for FailingWrite {
         fn poll_write(
@@ -752,6 +838,137 @@ mod test {
             .await
             .expect("Should read empty packet.");
         assert!(p.into_packet::<Empty>().is_ok());
+    }
+
+    #[tokio::test]
+    async fn frame_limit_rejects_massive_header_before_waiting_for_containers() {
+        let wire = SilkroadFrame::MassiveHeader {
+            count: 0,
+            crc: 0,
+            contained_opcode: 0x1234,
+            contained_count: 2,
+        }
+        .serialize()
+        .expect("the massive header should be representable");
+        let mut reader = SilkroadStreamRead::new(
+            FramedRead::new(wire.as_ref(), SilkroadCodec),
+            PacketRegistry::builder()
+                .build()
+                .expect("empty registry should build"),
+            SharedState::new(),
+        );
+        let limits = ReframingLimits::unlimited().with_max_frames_per_packet(2);
+        reader.set_reframing_limits(limits);
+        assert_eq!(limits, reader.reframing_limits());
+
+        let error = reader
+            .next()
+            .await
+            .expect_err("the declared three-frame packet should exceed the limit");
+
+        assert!(matches!(
+            error,
+            InStreamError::ReframingError(ReframingError::FrameCountLimitExceeded {
+                required: 3,
+                maximum: 2,
+            })
+        ));
+
+        let retry_error = reader
+            .next()
+            .await
+            .expect_err("a reframing failure should terminate the logical stream");
+        assert!(matches!(retry_error, InStreamError::ReframingTerminated));
+    }
+
+    #[tokio::test]
+    async fn cancelled_read_preserves_partial_reframing_state() {
+        let header = SilkroadFrame::MassiveHeader {
+            count: 0,
+            crc: 0,
+            contained_opcode: 0x1234,
+            contained_count: 1,
+        }
+        .serialize()
+        .expect("the massive header should be representable");
+        let unexpected = SilkroadFrame::Packet {
+            count: 0,
+            crc: 0,
+            opcode: 0x5678,
+            data: Bytes::new(),
+        }
+        .serialize()
+        .expect("the unexpected packet should be representable");
+        let split_at = header.len();
+        let mut data = header.to_vec();
+        data.extend_from_slice(&unexpected);
+        let transport = YieldOnceRead {
+            data,
+            split_at,
+            position: 0,
+            yielded_pending: false,
+        };
+        let mut reader = SilkroadStreamRead::new(
+            FramedRead::new(transport, SilkroadCodec),
+            PacketRegistry::builder()
+                .build()
+                .expect("empty registry should build"),
+            SharedState::new(),
+        );
+
+        let mut pending_read = Box::pin(reader.next());
+        assert!(matches!(
+            futures::poll!(&mut pending_read),
+            std::task::Poll::Pending
+        ));
+        drop(pending_read);
+
+        let error = reader
+            .next()
+            .await
+            .expect_err("the pending massive sequence must survive cancellation");
+        assert!(matches!(
+            error,
+            InStreamError::ReframingError(ReframingError::MixedFrames)
+        ));
+    }
+
+    #[tokio::test]
+    async fn payload_limit_rejects_simple_packet() {
+        let wire = SilkroadFrame::Packet {
+            count: 0,
+            crc: 0,
+            opcode: 0x1234,
+            data: Bytes::from_static(&[1, 2, 3]),
+        }
+        .serialize()
+        .expect("the packet should be representable");
+        let mut reader = SilkroadStreamRead::new(
+            FramedRead::new(wire.as_ref(), SilkroadCodec),
+            PacketRegistry::builder()
+                .build()
+                .expect("empty registry should build"),
+            SharedState::new(),
+        );
+        reader.set_reframing_limits(
+            ReframingLimits::unlimited().with_max_payload_bytes_per_packet(2),
+        );
+
+        let error = reader
+            .next()
+            .await
+            .expect_err("the three-byte payload should exceed the limit");
+
+        assert!(matches!(
+            error,
+            InStreamError::ReframingError(ReframingError::PayloadByteLimitExceeded {
+                attempted: 3,
+                maximum: 2,
+            })
+        ));
+
+        reader.clear_reframing_limits();
+        assert_eq!(ReframingLimits::unlimited(), reader.reframing_limits());
     }
 
     #[tokio::test]

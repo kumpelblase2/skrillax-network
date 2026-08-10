@@ -25,7 +25,9 @@
 //! `my_packet.as_packet(&serde_context)?`, then
 //! `outgoing.as_frames(security_context)?`. To turn frames into a packet, use
 //! `IncomingPacket::from_frames(frames, security_context)` followed by the
-//! packet's `TryFromPacket` implementation.
+//! packet's `TryFromPacket` implementation. Receiver-controlled frame-count and
+//! payload-byte limits can be enforced with
+//! [`IncomingPacket::from_frames_with_limits`] or [`IncomingPacketReframer`].
 //!
 //! However, this does require a bit more than just the [Packet] implementation.
 //! Either you need to implement the [TryFromPacket] and [AsPacket] traits
@@ -138,6 +140,29 @@ impl IncomingPacket {
 
     pub fn data(&self) -> &[u8] {
         &self.data
+    }
+
+    /// Constructs a logical packet from frames while enforcing receiver limits.
+    ///
+    /// Limits are checked incrementally before massive container payloads are
+    /// accumulated. The first complete packet is returned; frames after that
+    /// packet are left unexamined, matching [`FromFrames::from_frames`].
+    pub fn from_frames_with_limits(
+        frames: &[SilkroadFrame],
+        security: SecurityContext<'_>,
+        limits: ReframingLimits,
+    ) -> Result<Self, ReframingError> {
+        let mut reframer = IncomingPacketReframer::new(limits);
+        for frame in frames {
+            if let Some(packet) = reframer.push(
+                frame,
+                SecurityContext::new(security.encryption(), security.checkers()),
+            )? {
+                return Ok(packet);
+            }
+        }
+
+        Err(reframer.incomplete_error())
     }
 }
 
@@ -454,7 +479,97 @@ impl AsFrames for OutgoingPacket {
     }
 }
 
+/// Receiver policy for constructing one logical packet from frames.
+///
+/// Frame counts include every frame contributing to the logical packet,
+/// including a massive header. Payload bytes are the bytes eventually exposed
+/// through [`IncomingPacket::data`]; framing metadata and encryption padding do
+/// not count. The default is unlimited to preserve protocol compatibility.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct ReframingLimits {
+    max_frames_per_packet: Option<usize>,
+    max_payload_bytes_per_packet: Option<usize>,
+}
+
+impl ReframingLimits {
+    /// Creates a policy with no frame-count or payload-byte limit.
+    pub const fn unlimited() -> Self {
+        Self {
+            max_frames_per_packet: None,
+            max_payload_bytes_per_packet: None,
+        }
+    }
+
+    /// Creates a policy with the recommended limits to start with.
+    ///
+    /// This is currently set to 64 max frames and ~8MiB of payload. It is
+    /// unlikely to get larger payloads in normal operation, but this avoids
+    /// abusive peers to some degree.
+    pub const fn recommended() -> Self {
+        Self {
+            max_frames_per_packet: Some(64),
+            max_payload_bytes_per_packet: Some(1024 * 1024 * 8),
+        }
+    }
+
+    /// Sets the maximum number of frames contributing to one logical packet.
+    ///
+    /// A maximum of zero rejects every packet. A normal packet requires one
+    /// frame, while a massive packet requires its header plus all declared
+    /// container frames.
+    pub const fn with_max_frames_per_packet(mut self, maximum: usize) -> Self {
+        self.max_frames_per_packet = Some(maximum);
+        self
+    }
+
+    /// Sets the maximum payload size of one logical packet.
+    ///
+    /// A maximum of zero permits packets with an empty payload.
+    pub const fn with_max_payload_bytes_per_packet(mut self, maximum: usize) -> Self {
+        self.max_payload_bytes_per_packet = Some(maximum);
+        self
+    }
+
+    /// Returns the configured frame-count maximum, if any.
+    pub const fn max_frames_per_packet(&self) -> Option<usize> {
+        self.max_frames_per_packet
+    }
+
+    /// Returns the configured payload-byte maximum, if any.
+    pub const fn max_payload_bytes_per_packet(&self) -> Option<usize> {
+        self.max_payload_bytes_per_packet
+    }
+
+    fn check_frame_count(&self, required: usize) -> Result<(), ReframingError> {
+        if let Some(maximum) = self.max_frames_per_packet
+            && required > maximum
+        {
+            return Err(ReframingError::FrameCountLimitExceeded { required, maximum });
+        }
+
+        Ok(())
+    }
+
+    fn check_payload_bytes(&self, attempted: usize) -> Result<(), ReframingError> {
+        if let Some(maximum) = self.max_payload_bytes_per_packet
+            && attempted > maximum
+        {
+            return Err(ReframingError::PayloadByteLimitExceeded { attempted, maximum });
+        }
+
+        Ok(())
+    }
+}
+
+impl Default for ReframingLimits {
+    fn default() -> Self {
+        ReframingLimits::recommended()
+    }
+}
+
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum ReframingError {
     #[error("We don't have enough packets to complete the re-framing")]
     Incomplete(Option<usize>),
@@ -474,6 +589,278 @@ pub enum ReframingError {
     CrcCheckFailed { expected: u8, received: u8 },
     #[error("The count byte was {received} by we expected to to be {expected}")]
     CounterCheckFailed { expected: u8, received: u8 },
+    #[error(
+        "Logical packet requires {required} frames, exceeding the configured maximum {maximum}"
+    )]
+    FrameCountLimitExceeded { required: usize, maximum: usize },
+    #[error("The frame count of a logical packet overflowed usize")]
+    FrameCountOverflow,
+    #[error(
+        "Logical packet payload would contain {attempted} bytes, exceeding the configured maximum \
+         {maximum}"
+    )]
+    PayloadByteLimitExceeded { attempted: usize, maximum: usize },
+    #[error("The combined payload size of a logical packet overflowed usize")]
+    PayloadSizeOverflow,
+}
+
+/// Incrementally constructs logical packets from incoming frames.
+///
+/// Limits are checked before payload bytes are accumulated. In particular, a
+/// massive header whose declared frame count exceeds the policy is rejected
+/// before any of its containers are received. A limit error should be treated
+/// as terminal for the containing stream because unread containers belonging to
+/// a rejected massive packet remain on the wire.
+pub struct IncomingPacketReframer {
+    limits: ReframingLimits,
+    massive_information: Option<MassiveInfo>,
+    massive_buffer: BytesMut,
+    frame_count: usize,
+}
+
+impl IncomingPacketReframer {
+    /// Creates an idle reframer using `limits` for each logical packet.
+    pub fn new(limits: ReframingLimits) -> Self {
+        Self {
+            limits,
+            massive_information: None,
+            massive_buffer: BytesMut::new(),
+            frame_count: 0,
+        }
+    }
+
+    /// Returns the active receiver policy.
+    pub const fn limits(&self) -> ReframingLimits {
+        self.limits
+    }
+
+    /// Processes one frame, returning a packet when the logical packet is
+    /// complete.
+    ///
+    /// `Ok(None)` means that a massive packet still requires container frames.
+    /// The reframer resets after completing a packet and can then receive the
+    /// first frame of the next logical packet.
+    pub fn push(
+        &mut self,
+        frame: &SilkroadFrame,
+        security: SecurityContext<'_>,
+    ) -> Result<Option<IncomingPacket>, ReframingError> {
+        match frame {
+            SilkroadFrame::Packet {
+                opcode,
+                data,
+                count,
+                crc,
+            } => {
+                if self.massive_information.is_some() {
+                    return Err(ReframingError::MixedFrames);
+                }
+
+                if let Some(checkers) = security.checkers() {
+                    let expected_count = checkers.generate_count_byte();
+                    if *count != expected_count {
+                        return Err(ReframingError::CounterCheckFailed {
+                            expected: expected_count,
+                            received: *count,
+                        });
+                    }
+
+                    let mut checksum_builder = checkers.checksum_builder();
+                    checksum_builder.update(&(data.len() as u16).to_le_bytes());
+                    checksum_builder.update(&opcode.to_le_bytes());
+                    checksum_builder.update_byte(*count);
+                    checksum_builder.update_byte(0);
+                    checksum_builder.update(data);
+                    let expected_crc = checksum_builder.digest();
+                    if *crc != expected_crc {
+                        return Err(ReframingError::CrcCheckFailed {
+                            expected: expected_crc,
+                            received: *crc,
+                        });
+                    }
+                }
+
+                self.limits.check_frame_count(1)?;
+                self.limits.check_payload_bytes(data.len())?;
+                Ok(Some(self.finish_packet(*opcode, data.clone())))
+            },
+            SilkroadFrame::Encrypted {
+                encrypted_data,
+                content_size,
+            } => {
+                if self.massive_information.is_some() {
+                    return Err(ReframingError::MixedFrames);
+                }
+
+                let Some(encryption) = security.encryption() else {
+                    return Err(ReframingError::MissingSecurity);
+                };
+
+                let decrypted = encryption
+                    .decrypt(encrypted_data)
+                    .map_err(ReframingError::Decryption)?;
+
+                let Some(decrypted_data) = content_size
+                    .checked_add(4)
+                    .and_then(|payload_end| decrypted.get(0..payload_end))
+                else {
+                    return Err(ReframingError::InvalidEncryptedData);
+                };
+                let decrypted_frame = SilkroadFrame::from_data(decrypted_data)?;
+                let SilkroadFrame::Packet {
+                    opcode,
+                    data,
+                    count,
+                    crc,
+                } = decrypted_frame
+                else {
+                    return Err(ReframingError::InvalidEncryptedData);
+                };
+
+                if let Some(checkers) = security.checkers() {
+                    let expected_count = checkers.generate_count_byte();
+                    if count != expected_count {
+                        return Err(ReframingError::CounterCheckFailed {
+                            expected: expected_count,
+                            received: count,
+                        });
+                    }
+
+                    let mut checksum_builder = checkers.checksum_builder();
+                    checksum_builder.update(&(data.len() as u16 | 0x8000).to_le_bytes());
+                    checksum_builder.update(&opcode.to_le_bytes());
+                    checksum_builder.update_byte(count);
+                    checksum_builder.update_byte(0);
+                    checksum_builder.update(&data);
+                    let expected_crc = checksum_builder.digest();
+                    if crc != expected_crc {
+                        return Err(ReframingError::CrcCheckFailed {
+                            expected: expected_crc,
+                            received: crc,
+                        });
+                    }
+                }
+
+                self.limits.check_frame_count(1)?;
+                self.limits.check_payload_bytes(data.len())?;
+                Ok(Some(self.finish_packet(opcode, data)))
+            },
+            SilkroadFrame::MassiveHeader {
+                contained_count,
+                contained_opcode,
+                count,
+                crc,
+            } => {
+                if self.massive_information.is_some() {
+                    return Err(ReframingError::MixedFrames);
+                }
+
+                if let Some(checkers) = security.checkers() {
+                    let expected_count = checkers.generate_count_byte();
+                    if *count != expected_count {
+                        return Err(ReframingError::CounterCheckFailed {
+                            expected: expected_count,
+                            received: *count,
+                        });
+                    }
+
+                    let expected_crc = checkers.generate_massive_header_checksum(
+                        *count,
+                        *contained_opcode,
+                        *contained_count,
+                    );
+                    if *crc != expected_crc {
+                        return Err(ReframingError::CrcCheckFailed {
+                            expected: expected_crc,
+                            received: *crc,
+                        });
+                    }
+                }
+
+                let required_frames = usize::from(*contained_count)
+                    .checked_add(1)
+                    .ok_or(ReframingError::FrameCountOverflow)?;
+                self.limits.check_frame_count(required_frames)?;
+                self.limits.check_payload_bytes(0)?;
+
+                if *contained_count == 0 {
+                    return Ok(Some(self.finish_packet(*contained_opcode, Bytes::new())));
+                }
+
+                self.massive_information = Some(MassiveInfo {
+                    opcode: *contained_opcode,
+                    remaining: *contained_count,
+                });
+                self.frame_count = 1;
+                Ok(None)
+            },
+            SilkroadFrame::MassiveContainer { inner, count, crc } => {
+                if self.massive_information.is_none() {
+                    return Err(ReframingError::StrayMassiveContainer);
+                }
+
+                if let Some(checkers) = security.checkers() {
+                    let expected_count = checkers.generate_count_byte();
+                    if *count != expected_count {
+                        return Err(ReframingError::CounterCheckFailed {
+                            expected: expected_count,
+                            received: *count,
+                        });
+                    }
+
+                    let expected_crc = checkers.generate_massive_container_checksum(*count, inner);
+                    if *crc != expected_crc {
+                        return Err(ReframingError::CrcCheckFailed {
+                            expected: expected_crc,
+                            received: *crc,
+                        });
+                    }
+                }
+
+                let frame_count = self
+                    .frame_count
+                    .checked_add(1)
+                    .ok_or(ReframingError::FrameCountOverflow)?;
+                self.limits.check_frame_count(frame_count)?;
+                let payload_size = self
+                    .massive_buffer
+                    .len()
+                    .checked_add(inner.len())
+                    .ok_or(ReframingError::PayloadSizeOverflow)?;
+                self.limits.check_payload_bytes(payload_size)?;
+
+                self.massive_buffer.extend_from_slice(inner);
+                self.frame_count = frame_count;
+
+                let Some(massive) = self.massive_information.as_mut() else {
+                    return Err(ReframingError::StrayMassiveContainer);
+                };
+                massive.remaining -= 1;
+                if massive.remaining != 0 {
+                    return Ok(None);
+                }
+
+                let opcode = massive.opcode;
+                let data = std::mem::take(&mut self.massive_buffer).freeze();
+                Ok(Some(self.finish_packet(opcode, data)))
+            },
+        }
+    }
+
+    fn finish_packet(&mut self, opcode: u16, data: Bytes) -> IncomingPacket {
+        self.massive_information = None;
+        self.massive_buffer.clear();
+        self.frame_count = 0;
+        IncomingPacket::new(opcode, data)
+    }
+
+    fn incomplete_error(&self) -> ReframingError {
+        ReframingError::Incomplete(
+            self.massive_information
+                .as_ref()
+                .map(|massive| usize::from(massive.remaining)),
+        )
+    }
 }
 
 /// Provides a way to turn [SilkroadFrame]s into an [IncomingPacket].
@@ -490,6 +877,10 @@ pub trait FromFrames {
     /// It requires a security context such that it may validate and decrypt
     /// frames when the need arises. If no security is provided but an
     /// encrypted frame is encountered, it will error.
+    ///
+    /// This compatibility entry point does not impose receiver limits. Use
+    /// [`IncomingPacket::from_frames_with_limits`] when handling untrusted
+    /// frame sequences directly.
     fn from_frames(
         frames: &[SilkroadFrame],
         security: SecurityContext,
@@ -508,194 +899,18 @@ impl FromFrames for IncomingPacket {
         frames: &[SilkroadFrame],
         security: SecurityContext,
     ) -> Result<Self, ReframingError> {
-        let mut massive_information: Option<MassiveInfo> = None;
-        let mut massive_buffer: Option<BytesMut> = None;
-        for (i, frame) in frames.iter().enumerate() {
-            match frame {
-                SilkroadFrame::Packet { .. } | SilkroadFrame::Encrypted { .. }
-                    if massive_information.is_some() =>
-                {
-                    return Err(ReframingError::MixedFrames);
-                },
-                SilkroadFrame::Packet {
-                    opcode,
-                    data,
-                    count,
-                    crc,
-                } => {
-                    if let Some(checkers) = security.checkers() {
-                        let expected_count = checkers.generate_count_byte();
-                        if *count != expected_count {
-                            return Err(ReframingError::CounterCheckFailed {
-                                expected: expected_count,
-                                received: *count,
-                            });
-                        }
-
-                        let mut checksum_builder = checkers.checksum_builder();
-                        checksum_builder.update(&(data.len() as u16).to_le_bytes());
-                        checksum_builder.update(&opcode.to_le_bytes());
-                        checksum_builder.update_byte(*count);
-                        checksum_builder.update_byte(0);
-                        checksum_builder.update(data);
-                        let expected_crc = checksum_builder.digest();
-                        if *crc != expected_crc {
-                            return Err(ReframingError::CrcCheckFailed {
-                                expected: expected_crc,
-                                received: *crc,
-                            });
-                        }
-                    }
-
-                    return Ok(IncomingPacket::new(*opcode, data.clone()));
-                },
-                SilkroadFrame::Encrypted {
-                    encrypted_data,
-                    content_size,
-                } => {
-                    let Some(encryption) = security.encryption() else {
-                        return Err(ReframingError::MissingSecurity);
-                    };
-
-                    let decrypted = encryption
-                        .decrypt(encrypted_data)
-                        .map_err(ReframingError::Decryption)?;
-
-                    let Some(decrypted_data) = content_size
-                        .checked_add(4)
-                        .and_then(|payload_end| decrypted.get(0..payload_end))
-                    else {
-                        return Err(ReframingError::InvalidEncryptedData);
-                    };
-                    let frame = SilkroadFrame::from_data(decrypted_data)?;
-                    return match frame {
-                        SilkroadFrame::Packet {
-                            opcode,
-                            data,
-                            count,
-                            crc,
-                        } => {
-                            if let Some(checkers) = security.checkers() {
-                                let expected_count = checkers.generate_count_byte();
-                                if count != expected_count {
-                                    return Err(ReframingError::CounterCheckFailed {
-                                        expected: expected_count,
-                                        received: count,
-                                    });
-                                }
-
-                                let mut checksum_builder = checkers.checksum_builder();
-                                checksum_builder
-                                    .update(&(data.len() as u16 | 0x8000).to_le_bytes());
-                                checksum_builder.update(&opcode.to_le_bytes());
-                                checksum_builder.update_byte(count);
-                                checksum_builder.update_byte(0);
-                                checksum_builder.update(&data);
-                                let expected_crc = checksum_builder.digest();
-                                if crc != expected_crc {
-                                    return Err(ReframingError::CrcCheckFailed {
-                                        expected: expected_crc,
-                                        received: crc,
-                                    });
-                                }
-                            }
-                            Ok(IncomingPacket::new(opcode, data))
-                        },
-                        _ => Err(ReframingError::InvalidEncryptedData),
-                    };
-                },
-                SilkroadFrame::MassiveHeader {
-                    contained_count,
-                    contained_opcode,
-                    count,
-                    crc,
-                } => {
-                    if massive_information.is_some() {
-                        return Err(ReframingError::MixedFrames);
-                    }
-
-                    let required_frames = *contained_count as usize;
-                    let remaining_frames = frames.len() - (i + 1);
-                    if required_frames > remaining_frames {
-                        return Err(ReframingError::Incomplete(Some(required_frames)));
-                    }
-
-                    if let Some(checkers) = security.checkers() {
-                        let expected_count = checkers.generate_count_byte();
-                        if *count != expected_count {
-                            return Err(ReframingError::CounterCheckFailed {
-                                expected: expected_count,
-                                received: *count,
-                            });
-                        }
-
-                        let expected_crc = checkers.generate_massive_header_checksum(
-                            *count,
-                            *contained_opcode,
-                            *contained_count,
-                        );
-                        if *crc != expected_crc {
-                            return Err(ReframingError::CrcCheckFailed {
-                                expected: expected_crc,
-                                received: *crc,
-                            });
-                        }
-                    }
-
-                    if *contained_count == 0 {
-                        return Ok(IncomingPacket::new(*contained_opcode, Bytes::new()));
-                    }
-
-                    massive_information = Some(MassiveInfo {
-                        opcode: *contained_opcode,
-                        remaining: *contained_count,
-                    });
-                },
-                SilkroadFrame::MassiveContainer { inner, count, crc } => {
-                    if let Some(mut massive) = massive_information.take() {
-                        let mut current_buffer = massive_buffer.take().unwrap_or_default();
-                        current_buffer.extend_from_slice(inner);
-
-                        massive.remaining -= 1;
-
-                        if let Some(checkers) = security.checkers() {
-                            let expected_count = checkers.generate_count_byte();
-                            if *count != expected_count {
-                                return Err(ReframingError::CounterCheckFailed {
-                                    expected: expected_count,
-                                    received: *count,
-                                });
-                            }
-
-                            let expected_crc =
-                                checkers.generate_massive_container_checksum(*count, inner);
-                            if *crc != expected_crc {
-                                return Err(ReframingError::CrcCheckFailed {
-                                    expected: expected_crc,
-                                    received: *crc,
-                                });
-                            }
-                        }
-
-                        if massive.remaining == 0 {
-                            return Ok(IncomingPacket::new(
-                                massive.opcode,
-                                current_buffer.freeze(),
-                            ));
-                        } else {
-                            massive_buffer = Some(current_buffer);
-                            massive_information = Some(massive);
-                        }
-                    } else {
-                        return Err(ReframingError::StrayMassiveContainer);
-                    }
-                },
+        if let Some(SilkroadFrame::MassiveHeader {
+            contained_count, ..
+        }) = frames.first()
+        {
+            let required_containers = usize::from(*contained_count);
+            let available_containers = frames.len().saturating_sub(1);
+            if required_containers > available_containers {
+                return Err(ReframingError::Incomplete(Some(required_containers)));
             }
         }
 
-        Err(ReframingError::Incomplete(
-            massive_information.map(|massive| massive.remaining as usize),
-        ))
+        Self::from_frames_with_limits(frames, security, ReframingLimits::recommended())
     }
 }
 

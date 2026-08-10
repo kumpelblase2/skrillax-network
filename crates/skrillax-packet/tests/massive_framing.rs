@@ -4,7 +4,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use skrillax_codec::{MAX_MASSIVE_CONTAINER_INNER_SIZE, SilkroadFrame};
 use skrillax_packet::{
     AsFrames, AsPacket, FramingError, FromFrames, IncomingPacket, OutgoingPacket, Packet,
-    PacketError, ReframingError, SecurityBytes, SecurityContext,
+    PacketError, ReframingError, ReframingLimits, SecurityBytes, SecurityContext,
 };
 use skrillax_serde::{ByteSize, SerdeContext, SerializationError, Serialize};
 
@@ -244,6 +244,159 @@ fn assert_massive_round_trip(
 }
 
 #[test]
+fn reframing_limits_are_unlimited_and_composable() {
+    let unlimited = ReframingLimits::unlimited();
+    assert_eq!(None, unlimited.max_frames_per_packet());
+    assert_eq!(None, unlimited.max_payload_bytes_per_packet());
+    assert_eq!(unlimited, ReframingLimits::default());
+
+    let limited = unlimited
+        .with_max_frames_per_packet(3)
+        .with_max_payload_bytes_per_packet(4);
+    assert_eq!(Some(3), limited.max_frames_per_packet());
+    assert_eq!(Some(4), limited.max_payload_bytes_per_packet());
+}
+
+#[test]
+fn simple_packet_observes_frame_and_payload_limits() {
+    let frame = SilkroadFrame::Packet {
+        count: 0,
+        crc: 0,
+        opcode: 0x1234,
+        data: Bytes::from_static(&[1, 2, 3]),
+    };
+    let exact_limits = ReframingLimits::unlimited()
+        .with_max_frames_per_packet(1)
+        .with_max_payload_bytes_per_packet(3);
+
+    let incoming = IncomingPacket::from_frames_with_limits(
+        std::slice::from_ref(&frame),
+        SecurityContext::default(),
+        exact_limits,
+    )
+    .expect("limits should be inclusive");
+    assert_eq!(&[1, 2, 3], incoming.data());
+
+    let frame_error = IncomingPacket::from_frames_with_limits(
+        std::slice::from_ref(&frame),
+        SecurityContext::default(),
+        exact_limits.with_max_frames_per_packet(0),
+    );
+    assert!(matches!(
+        frame_error,
+        Err(ReframingError::FrameCountLimitExceeded {
+            required: 1,
+            maximum: 0,
+        })
+    ));
+
+    let payload_error = IncomingPacket::from_frames_with_limits(
+        std::slice::from_ref(&frame),
+        SecurityContext::default(),
+        exact_limits.with_max_payload_bytes_per_packet(2),
+    );
+    assert!(matches!(
+        payload_error,
+        Err(ReframingError::PayloadByteLimitExceeded {
+            attempted: 3,
+            maximum: 2,
+        })
+    ));
+}
+
+#[test]
+fn massive_header_limit_includes_header_and_rejects_before_containers() {
+    let frame = SilkroadFrame::MassiveHeader {
+        count: 0,
+        crc: 0,
+        contained_opcode: RawMassive::ID,
+        contained_count: 2,
+    };
+    let limits = ReframingLimits::unlimited().with_max_frames_per_packet(2);
+
+    let result =
+        IncomingPacket::from_frames_with_limits(&[frame], SecurityContext::default(), limits);
+
+    assert!(matches!(
+        result,
+        Err(ReframingError::FrameCountLimitExceeded {
+            required: 3,
+            maximum: 2,
+        })
+    ));
+}
+
+#[test]
+fn massive_payload_limit_is_cumulative_and_inclusive() {
+    let frames = [
+        SilkroadFrame::MassiveHeader {
+            count: 0,
+            crc: 0,
+            contained_opcode: RawMassive::ID,
+            contained_count: 2,
+        },
+        SilkroadFrame::MassiveContainer {
+            count: 0,
+            crc: 0,
+            inner: Bytes::from_static(&[1, 2]),
+        },
+        SilkroadFrame::MassiveContainer {
+            count: 0,
+            crc: 0,
+            inner: Bytes::from_static(&[3, 4]),
+        },
+    ];
+    let exact_limits = ReframingLimits::unlimited()
+        .with_max_frames_per_packet(3)
+        .with_max_payload_bytes_per_packet(4);
+
+    let incoming =
+        IncomingPacket::from_frames_with_limits(&frames, SecurityContext::default(), exact_limits)
+            .expect("the exact cumulative payload limit should be accepted");
+    assert_eq!(&[1, 2, 3, 4], incoming.data());
+
+    let result = IncomingPacket::from_frames_with_limits(
+        &frames,
+        SecurityContext::default(),
+        exact_limits.with_max_payload_bytes_per_packet(3),
+    );
+    assert!(matches!(
+        result,
+        Err(ReframingError::PayloadByteLimitExceeded {
+            attempted: 4,
+            maximum: 3,
+        })
+    ));
+}
+
+#[test]
+fn encrypted_packet_observes_payload_limit_after_validation() {
+    let encryption = skrillax_security::SilkroadEncryption::from_key(0xFF00FF00FF00FF00);
+    let outgoing = OutgoingPacket::Encrypted {
+        opcode: 0x1234,
+        data: Bytes::from_static(&[1, 2, 3]),
+    };
+    let frames = outgoing
+        .as_frames(SecurityContext::new(Some(&encryption), None))
+        .expect("the encrypted packet should produce a frame");
+    let limits = ReframingLimits::unlimited().with_max_payload_bytes_per_packet(2);
+
+    let result = IncomingPacket::from_frames_with_limits(
+        &frames,
+        SecurityContext::new(Some(&encryption), None),
+        limits,
+    );
+
+    assert!(matches!(
+        result,
+        Err(ReframingError::PayloadByteLimitExceeded {
+            attempted: 3,
+            maximum: 2,
+        })
+    ));
+}
+
+#[test]
 fn zero_container_header_completes_empty_payload() {
     let frame = SilkroadFrame::MassiveHeader {
         count: 0,
@@ -328,6 +481,57 @@ fn zero_container_header_crc_is_validated_before_completion() {
     assert!(matches!(
         result,
         Err(ReframingError::CrcCheckFailed { expected, received })
+            if expected != received
+    ));
+}
+
+#[test]
+fn incomplete_secured_from_frames_can_be_retried_with_the_same_security() {
+    let sender_security = SecurityBytes::from_seeds(0x1234_5678, 0x9ABC_DEF0);
+    let receiver_security = SecurityBytes::from_seeds(0x1234_5678, 0x9ABC_DEF0);
+    let outgoing = OutgoingPacket::Massive {
+        opcode: RawMassive::ID,
+        packets: vec![Bytes::from_static(&[1, 2, 3])],
+    };
+    let frames = outgoing
+        .as_frames(SecurityContext::new(None, Some(&sender_security)))
+        .expect("secured massive packet should produce frames");
+
+    let incomplete = IncomingPacket::from_frames(
+        &frames[..1],
+        SecurityContext::new(None, Some(&receiver_security)),
+    );
+    assert!(matches!(
+        incomplete,
+        Err(ReframingError::Incomplete(Some(1)))
+    ));
+
+    let incoming = IncomingPacket::from_frames(
+        &frames,
+        SecurityContext::new(None, Some(&receiver_security)),
+    )
+    .expect("an incomplete compatibility call must not consume security state");
+    assert_eq!(&[1, 2, 3], incoming.data());
+}
+
+#[test]
+fn secured_header_integrity_errors_take_precedence_over_limits() {
+    let (mut frames, receiver_security) = secured_empty_massive_frames();
+    let SilkroadFrame::MassiveHeader { count, .. } = &mut frames[0] else {
+        panic!("an empty massive packet should produce only a header");
+    };
+    *count = count.wrapping_add(1);
+    let limits = ReframingLimits::unlimited().with_max_frames_per_packet(0);
+
+    let result = IncomingPacket::from_frames_with_limits(
+        &frames,
+        SecurityContext::new(None, Some(&receiver_security)),
+        limits,
+    );
+
+    assert!(matches!(
+        result,
+        Err(ReframingError::CounterCheckFailed { expected, received })
             if expected != received
     ));
 }
