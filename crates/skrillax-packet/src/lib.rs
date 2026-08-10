@@ -142,23 +142,24 @@ impl IncomingPacket {
         &self.data
     }
 
-    /// Constructs a logical packet from frames while enforcing receiver limits.
+    /// Constructs one logical packet from the start of a frame slice while
+    /// enforcing receiver limits.
     ///
     /// Limits are checked incrementally before massive container payloads are
-    /// accumulated. The first complete packet is returned; frames after that
-    /// packet are left unexamined, matching [`FromFrames::from_frames`].
-    pub fn from_frames_with_limits(
-        frames: &[SilkroadFrame],
+    /// accumulated. The returned slice contains every frame after the first
+    /// complete packet and can be passed to this function again.
+    pub fn from_frames_with_limits<'frames>(
+        frames: &'frames [SilkroadFrame],
         security: SecurityContext<'_>,
         limits: ReframingLimits,
-    ) -> Result<Self, ReframingError> {
+    ) -> Result<(Self, &'frames [SilkroadFrame]), ReframingError> {
         let mut reframer = IncomingPacketReframer::new(limits);
-        for frame in frames {
+        for (index, frame) in frames.iter().enumerate() {
             if let Some(packet) = reframer.push(
                 frame,
                 SecurityContext::new(security.encryption(), security.checkers()),
             )? {
-                return Ok(packet);
+                return Ok((packet, &frames[index + 1..]));
             }
         }
 
@@ -484,7 +485,8 @@ impl AsFrames for OutgoingPacket {
 /// Frame counts include every frame contributing to the logical packet,
 /// including a massive header. Payload bytes are the bytes eventually exposed
 /// through [`IncomingPacket::data`]; framing metadata and encryption padding do
-/// not count. The default is unlimited to preserve protocol compatibility.
+/// not count. The default uses [`ReframingLimits::recommended`]; unlimited
+/// reframing remains available through [`ReframingLimits::unlimited`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ReframingLimits {
@@ -866,13 +868,13 @@ impl IncomingPacketReframer {
 /// Provides a way to turn [SilkroadFrame]s into an [IncomingPacket].
 pub trait FromFrames {
     type Output;
-    /// Try to turn _all_ frames into an incoming packet.
+    /// Tries to turn the first logical packet in `frames` into an incoming
+    /// packet and returns the unconsumed frame suffix.
     ///
-    /// This accepts a slice of frames, which is either a single packet frame
-    /// (plain or encrypted) or multiple frames representing a massive
-    /// packet. As such, this function does not return how many frames may
-    /// have been consumed, as it is expected to have consumed all the given
-    /// frames.
+    /// The packet may be represented by one plain or encrypted frame, or by a
+    /// massive header and its declared container frames. Returning the suffix
+    /// makes every supplied frame explicit and allows callers to parse several
+    /// logical packets from one slice without silently ignoring input.
     ///
     /// It requires a security context such that it may validate and decrypt
     /// frames when the need arises. If no security is provided but an
@@ -881,10 +883,10 @@ pub trait FromFrames {
     /// This compatibility entry point does not impose receiver limits. Use
     /// [`IncomingPacket::from_frames_with_limits`] when handling untrusted
     /// frame sequences directly.
-    fn from_frames(
-        frames: &[SilkroadFrame],
+    fn from_frames<'frames>(
+        frames: &'frames [SilkroadFrame],
         security: SecurityContext,
-    ) -> Result<Self::Output, ReframingError>;
+    ) -> Result<(Self::Output, &'frames [SilkroadFrame]), ReframingError>;
 }
 
 struct MassiveInfo {
@@ -895,10 +897,10 @@ struct MassiveInfo {
 impl FromFrames for IncomingPacket {
     type Output = IncomingPacket;
 
-    fn from_frames(
-        frames: &[SilkroadFrame],
+    fn from_frames<'frames>(
+        frames: &'frames [SilkroadFrame],
         security: SecurityContext,
-    ) -> Result<Self, ReframingError> {
+    ) -> Result<(Self, &'frames [SilkroadFrame]), ReframingError> {
         if let Some(SilkroadFrame::MassiveHeader {
             contained_count, ..
         }) = frames.first()
@@ -1059,9 +1061,10 @@ mod tests {
             content_size: 1,
             encrypted_data: Bytes::from_static(&[1, 2, 3]),
         };
+        let frames = [frame];
 
         let result =
-            IncomingPacket::from_frames(&[frame], SecurityContext::new(Some(&encryption), None));
+            IncomingPacket::from_frames(&frames, SecurityContext::new(Some(&encryption), None));
 
         assert!(matches!(
             result,
@@ -1081,9 +1084,10 @@ mod tests {
             content_size: 1,
             encrypted_data,
         };
+        let frames = [frame];
 
         let result =
-            IncomingPacket::from_frames(&[frame], SecurityContext::new(Some(&encryption), None));
+            IncomingPacket::from_frames(&frames, SecurityContext::new(Some(&encryption), None));
 
         assert!(matches!(
             result,

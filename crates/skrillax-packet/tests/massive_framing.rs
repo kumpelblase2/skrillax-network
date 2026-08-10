@@ -236,8 +236,10 @@ fn assert_massive_round_trip(
         parsed_frames.push(parsed);
     }
 
-    let incoming = IncomingPacket::from_frames(&parsed_frames, SecurityContext::default())
-        .expect("generated massive frames should reassemble");
+    let (incoming, remaining) =
+        IncomingPacket::from_frames(&parsed_frames, SecurityContext::default())
+            .expect("generated massive frames should reassemble");
+    assert!(remaining.is_empty());
     let (opcode, data) = incoming.consume();
     assert_eq!(RawMassive::ID, opcode);
     assert_eq!(expected_payload, data.as_ref());
@@ -248,7 +250,14 @@ fn reframing_limits_are_unlimited_and_composable() {
     let unlimited = ReframingLimits::unlimited();
     assert_eq!(None, unlimited.max_frames_per_packet());
     assert_eq!(None, unlimited.max_payload_bytes_per_packet());
-    assert_eq!(unlimited, ReframingLimits::default());
+
+    let recommended = ReframingLimits::recommended();
+    assert_eq!(Some(64), recommended.max_frames_per_packet());
+    assert_eq!(
+        Some(8 * 1024 * 1024),
+        recommended.max_payload_bytes_per_packet()
+    );
+    assert_eq!(recommended, ReframingLimits::default());
 
     let limited = unlimited
         .with_max_frames_per_packet(3)
@@ -269,12 +278,13 @@ fn simple_packet_observes_frame_and_payload_limits() {
         .with_max_frames_per_packet(1)
         .with_max_payload_bytes_per_packet(3);
 
-    let incoming = IncomingPacket::from_frames_with_limits(
+    let (incoming, remaining) = IncomingPacket::from_frames_with_limits(
         std::slice::from_ref(&frame),
         SecurityContext::default(),
         exact_limits,
     )
     .expect("limits should be inclusive");
+    assert!(remaining.is_empty());
     assert_eq!(&[1, 2, 3], incoming.data());
 
     let frame_error = IncomingPacket::from_frames_with_limits(
@@ -314,8 +324,9 @@ fn massive_header_limit_includes_header_and_rejects_before_containers() {
     };
     let limits = ReframingLimits::unlimited().with_max_frames_per_packet(2);
 
+    let frames = [frame];
     let result =
-        IncomingPacket::from_frames_with_limits(&[frame], SecurityContext::default(), limits);
+        IncomingPacket::from_frames_with_limits(&frames, SecurityContext::default(), limits);
 
     assert!(matches!(
         result,
@@ -350,9 +361,10 @@ fn massive_payload_limit_is_cumulative_and_inclusive() {
         .with_max_frames_per_packet(3)
         .with_max_payload_bytes_per_packet(4);
 
-    let incoming =
+    let (incoming, remaining) =
         IncomingPacket::from_frames_with_limits(&frames, SecurityContext::default(), exact_limits)
             .expect("the exact cumulative payload limit should be accepted");
+    assert!(remaining.is_empty());
     assert_eq!(&[1, 2, 3, 4], incoming.data());
 
     let result = IncomingPacket::from_frames_with_limits(
@@ -405,15 +417,17 @@ fn zero_container_header_completes_empty_payload() {
         contained_count: 0,
     };
 
-    let incoming = IncomingPacket::from_frames(&[frame], SecurityContext::default())
+    let frames = [frame];
+    let (incoming, remaining) = IncomingPacket::from_frames(&frames, SecurityContext::default())
         .expect("a zero-container header should complete immediately");
 
+    assert!(remaining.is_empty());
     assert_eq!(RawMassive::ID, incoming.opcode());
     assert!(incoming.data().is_empty());
 }
 
 #[test]
-fn zero_container_header_does_not_append_undeclared_container() {
+fn zero_container_header_returns_undeclared_container_as_remainder() {
     let frames = [
         SilkroadFrame::MassiveHeader {
             count: 0,
@@ -428,11 +442,77 @@ fn zero_container_header_does_not_append_undeclared_container() {
         },
     ];
 
-    let incoming = IncomingPacket::from_frames(&frames, SecurityContext::default())
+    let (incoming, remaining) = IncomingPacket::from_frames(&frames, SecurityContext::default())
         .expect("the zero-container sequence should already be complete");
 
     assert_eq!(RawMassive::ID, incoming.opcode());
     assert!(incoming.data().is_empty());
+    assert_eq!(&frames[1..], remaining);
+}
+
+#[test]
+fn simple_packet_returns_following_frames_as_remainder() {
+    let frames = [
+        SilkroadFrame::Packet {
+            count: 0,
+            crc: 0,
+            opcode: 0x1234,
+            data: Bytes::from_static(&[1, 2, 3]),
+        },
+        SilkroadFrame::Packet {
+            count: 0,
+            crc: 0,
+            opcode: 0x5678,
+            data: Bytes::from_static(&[4, 5, 6]),
+        },
+    ];
+
+    let (incoming, remaining) = IncomingPacket::from_frames(&frames, SecurityContext::default())
+        .expect("the first simple frame should complete the packet");
+
+    assert_eq!(0x1234, incoming.opcode());
+    assert_eq!(&[1, 2, 3], incoming.data());
+    assert_eq!(&frames[1..], remaining);
+}
+
+#[test]
+fn secured_packets_can_be_parsed_sequentially_from_one_slice() {
+    let sender_security = SecurityBytes::from_seeds(0x1234_5678, 0x9ABC_DEF0);
+    let receiver_security = SecurityBytes::from_seeds(0x1234_5678, 0x9ABC_DEF0);
+    let first = OutgoingPacket::Simple {
+        opcode: 0x1234,
+        data: Bytes::from_static(&[1, 2, 3]),
+    };
+    let second = OutgoingPacket::Simple {
+        opcode: 0x5678,
+        data: Bytes::from_static(&[4, 5, 6]),
+    };
+    let mut frames = first
+        .as_frames(SecurityContext::new(None, Some(&sender_security)))
+        .expect("the first secured packet should produce a frame");
+    frames.extend(
+        second
+            .as_frames(SecurityContext::new(None, Some(&sender_security)))
+            .expect("the second secured packet should produce a frame"),
+    );
+
+    let (first, remaining) = IncomingPacket::from_frames(
+        &frames,
+        SecurityContext::new(None, Some(&receiver_security)),
+    )
+    .expect("the first secured packet should parse");
+    assert_eq!(0x1234, first.opcode());
+    assert_eq!(&[1, 2, 3], first.data());
+    assert_eq!(1, remaining.len());
+
+    let (second, remaining) = IncomingPacket::from_frames(
+        remaining,
+        SecurityContext::new(None, Some(&receiver_security)),
+    )
+    .expect("the second secured packet should parse");
+    assert_eq!(0x5678, second.opcode());
+    assert_eq!(&[4, 5, 6], second.data());
+    assert!(remaining.is_empty());
 }
 
 #[test]
@@ -506,11 +586,12 @@ fn incomplete_secured_from_frames_can_be_retried_with_the_same_security() {
         Err(ReframingError::Incomplete(Some(1)))
     ));
 
-    let incoming = IncomingPacket::from_frames(
+    let (incoming, remaining) = IncomingPacket::from_frames(
         &frames,
         SecurityContext::new(None, Some(&receiver_security)),
     )
     .expect("an incomplete compatibility call must not consume security state");
+    assert!(remaining.is_empty());
     assert_eq!(&[1, 2, 3], incoming.data());
 }
 
@@ -559,11 +640,12 @@ fn secured_massive_packet_round_trips() {
         })
         .collect::<Vec<_>>();
 
-    let incoming = IncomingPacket::from_frames(
+    let (incoming, remaining) = IncomingPacket::from_frames(
         &parsed_frames,
         SecurityContext::new(None, Some(&receiver_security)),
     )
     .expect("secured massive packet should pass integrity verification");
+    assert!(remaining.is_empty());
 
     let (opcode, data) = incoming.consume();
     assert_eq!(RawMassive::ID, opcode);
@@ -690,7 +772,8 @@ fn maximum_container_count_remains_incomplete_without_containers() {
         contained_count: u16::MAX,
     };
 
-    let result = IncomingPacket::from_frames(&[frame], SecurityContext::default());
+    let frames = [frame];
+    let result = IncomingPacket::from_frames(&frames, SecurityContext::default());
 
     assert!(matches!(
         result,
