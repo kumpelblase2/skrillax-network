@@ -914,6 +914,20 @@ fn size_zero_with_when_is_a_decodable_conditional_option() {
     );
 }
 
+#[test]
+fn derived_boolean_fields_reject_noncanonical_values() {
+    let mut input = Cursor::new([2, 0x34, 0x12]);
+
+    let error = ExplicitMarkerlessConditional::read_from(&mut input, &SerdeContext::default())
+        .expect_err("a derived boolean field must reject values other than zero or one");
+
+    assert!(matches!(
+        error,
+        SerializationError::InvalidBooleanValue { value: 2 }
+    ));
+    assert_eq!(input.position(), 1);
+}
+
 #[derive(Serialize, ByteSize)]
 struct BareOption(#[silkroad(size = 0)] Option<u16>);
 

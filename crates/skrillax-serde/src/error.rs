@@ -56,6 +56,8 @@ pub enum SerializationError {
     NoMatchingVariant { enum_name: &'static str },
     #[error("field {field} contained invalid presence marker {value}")]
     InvalidPresenceMarker { field: &'static str, value: u64 },
+    #[error("boolean contained non-canonical value {value}; expected 0 or 1")]
+    InvalidBooleanValue { value: u8 },
     #[error("field {field} contained invalid sequence marker {value}")]
     InvalidSequenceMarker { field: &'static str, value: u64 },
     #[error("decoded length {value} for field {field} cannot be represented as usize")]

@@ -11,6 +11,9 @@
 //! [`SerdeContext`]. The policy is opt-in, unlimited by default, measured in
 //! elements per collection, and affects deserialization only. It is not a byte,
 //! packet, frame, reassembly, or stream limit.
+//!
+//! Booleans use one canonical byte: `0` for false and `1` for true. Other
+//! values are rejected during deserialization.
 
 pub mod error;
 mod time;
@@ -340,7 +343,11 @@ impl Deserialize for bool {
     where
         Self: Sized,
     {
-        Ok(reader.read_u8()? == 1)
+        match reader.read_u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            value => Err(SerializationError::InvalidBooleanValue { value }),
+        }
     }
 }
 
@@ -534,6 +541,39 @@ mod test {
             SerializationError::IoError(error)
                 if error.kind() == std::io::ErrorKind::UnexpectedEof
         ));
+    }
+
+    #[test]
+    fn bool_uses_canonical_wire_values() {
+        let context = SerdeContext::default();
+        let mut output = BytesMut::new();
+
+        false
+            .write_to(&mut output, &context)
+            .expect("false should serialize");
+        true.write_to(&mut output, &context)
+            .expect("true should serialize");
+        assert_eq!(output.as_ref(), &[0, 1]);
+
+        assert!(!bool::read_from(&mut &b"\0"[..], &context).expect("zero should decode"));
+        assert!(bool::read_from(&mut &b"\x01"[..], &context).expect("one should decode"));
+    }
+
+    #[test]
+    fn bool_rejects_noncanonical_values_without_reading_a_suffix() {
+        for value in [2, u8::MAX] {
+            let bytes = [value, 0xaa];
+            let mut input = &bytes[..];
+
+            let error = bool::read_from(&mut input, &SerdeContext::default())
+                .expect_err("a boolean must be encoded as zero or one");
+
+            assert!(matches!(
+                error,
+                SerializationError::InvalidBooleanValue { value: actual } if actual == value
+            ));
+            assert_eq!(input, &[0xaa]);
+        }
     }
 
     #[test]

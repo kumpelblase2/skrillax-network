@@ -20,6 +20,8 @@ Fields are encoded consecutively in declaration order, generally in
 little-endian byte order. There are no implicit separators.
 
 - Primitive integers and floating-point values use their fixed wire width.
+- A `bool` uses one byte: `0` for false and `1` for true. Other byte values are
+  non-canonical and rejected during deserialization.
 - `[T; N]` has no prefix and concatenates exactly `N` elements.
 - A `String` has a little-endian `u16` prefix. UTF-8 strings count payload bytes;
   UTF-16LE strings count UTF-16 code units, not Rust UTF-8 bytes.
