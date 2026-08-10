@@ -45,7 +45,8 @@ async fn main() {
         .register::<IdentityInformation>()
         .register::<GatewayNoticeRequest>()
         .register::<GatewayNoticeResponse>()
-        .build();
+        .build()
+        .expect("client packet opcodes should be unique");
     let (mut reader, mut writer) = connection.into_silkroad_stream(client_registry);
     PassiveSecuritySetup::handle(&mut reader, &mut writer)
         .await

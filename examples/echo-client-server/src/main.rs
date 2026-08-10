@@ -34,7 +34,8 @@ fn start_server() {
             .register_active_handshake()
             .register_incoming::<ClientHello>()
             .register_outgoing::<ServerHello>()
-            .build();
+            .build()
+            .expect("server packet opcodes should be unique");
         let (mut reader, mut writer) = client.into_silkroad_stream(server_registry);
         ActiveSecuritySetup::handle(&mut reader, &mut writer)
             .await
@@ -58,7 +59,8 @@ async fn run_client() {
         .register_passive_handshake()
         .register_outgoing::<ClientHello>()
         .register_incoming::<ServerHello>()
-        .build();
+        .build()
+        .expect("client packet opcodes should be unique");
     let (mut reader, mut writer) = client.into_silkroad_stream(client_registry);
     PassiveSecuritySetup::handle(&mut reader, &mut writer)
         .await

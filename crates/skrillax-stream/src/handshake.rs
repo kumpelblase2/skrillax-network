@@ -27,13 +27,19 @@
 //! # use skrillax_stream::handshake::PassiveSecuritySetup;
 //! # let listen_addr = "127.0.0.1:1337".parse().unwrap();
 //! # let socket = TcpSocket::new_v4().unwrap().connect(listen_addr).await.unwrap();
-//! let registry = PacketRegistry::builder().register_active_handshake().build();
+//! let registry = PacketRegistry::builder()
+//!     .register_active_handshake()
+//!     .build()
+//!     .expect("handshake opcodes should be unique");
 //! let (mut reader, mut writer) = socket.into_silkroad_stream(registry);
 //! ActiveSecuritySetup::handle(&mut reader, &mut writer)
 //!     .await
 //!     .expect("Active setup should complete.");
 //! // OR
-//! let registry = PacketRegistry::builder().register_passive_handshake().build();
+//! let registry = PacketRegistry::builder()
+//!     .register_passive_handshake()
+//!     .build()
+//!     .expect("handshake opcodes should be unique");
 //! # let socket = TcpSocket::new_v4().unwrap().connect(listen_addr).await.unwrap();
 //! let (mut reader, mut writer) = socket.into_silkroad_stream(registry);
 //! PassiveSecuritySetup::handle(&mut reader, &mut writer)
@@ -585,12 +591,14 @@ mod test {
             .register_active_handshake()
             .register::<Test>()
             .register::<PlainTest>()
-            .build();
+            .build()
+            .expect("server packet opcodes should be unique");
         let client_registry = PacketRegistry::builder()
             .register_passive_handshake()
             .register::<Test>()
             .register::<PlainTest>()
-            .build();
+            .build()
+            .expect("client packet opcodes should be unique");
 
         let server = tokio::spawn(async move {
             let (socket, _) = server_listener.accept().await.unwrap();
@@ -692,10 +700,12 @@ mod test {
         let listener = listener.listen(0).unwrap();
         let passive_registry = PacketRegistry::builder()
             .register_passive_handshake()
-            .build();
+            .build()
+            .expect("passive handshake opcodes should be unique");
         let active_registry = PacketRegistry::builder()
             .register_active_handshake()
-            .build();
+            .build()
+            .expect("active handshake opcodes should be unique");
 
         let passive = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
@@ -773,10 +783,12 @@ mod test {
         let listener = listener.listen(0).unwrap();
         let passive_registry = PacketRegistry::builder()
             .register_passive_handshake()
-            .build();
+            .build()
+            .expect("passive handshake opcodes should be unique");
         let active_registry = PacketRegistry::builder()
             .register_active_handshake()
-            .build();
+            .build()
+            .expect("active handshake opcodes should be unique");
 
         let passive = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();

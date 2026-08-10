@@ -131,13 +131,11 @@ impl SerdeContext {
     }
 
     pub fn get<T: Clone + 'static>(&self) -> Option<T> {
-        let guard = self.data.read().expect("");
-        let option = guard.get(&TypeId::of::<T>()).map(|value| {
-            value
-                .downcast_ref()
-                .expect("Downcast to the same typeid should work.")
-        });
-        option.cloned()
+        let guard = self.data.read().expect("Lock should not be poisoned.");
+        guard
+            .get(&TypeId::of::<T>())
+            .and_then(|value| value.downcast_ref::<T>())
+            .cloned()
     }
 
     pub fn set<T: Send + Sync + 'static>(&self, value: T) {
@@ -151,7 +149,7 @@ impl SerdeContext {
         let _ = self
             .data
             .write()
-            .expect("Lock should not be poisoned.")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&TypeId::of::<T>());
     }
 
@@ -384,10 +382,12 @@ impl<T: Deserialize, const N: usize> Deserialize for [T; N] {
             elements.push(T::read_from(reader, ctx)?);
         }
 
-        match elements.try_into() {
-            Ok(array) => Ok(array),
-            Err(_) => unreachable!("exactly N array elements were deserialized"),
-        }
+        elements
+            .try_into()
+            .map_err(|elements: Vec<T>| SerializationError::ArrayLengthMismatch {
+                expected: N,
+                actual: elements.len(),
+            })
     }
 }
 
@@ -546,6 +546,15 @@ mod test {
         assert_eq!("Hello!", option.unwrap());
         context.unset::<String>();
         assert!(context.get::<String>().is_none());
+    }
+
+    #[test]
+    fn context_type_mismatch_is_treated_as_missing() {
+        let mut data = ContextMap::new();
+        data.insert(TypeId::of::<String>(), Box::new(42u32));
+        let context = SerdeContext::new(Arc::new(RwLock::new(data)));
+
+        assert_eq!(context.get::<String>(), None);
     }
 
     #[test]

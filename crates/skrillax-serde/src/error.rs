@@ -60,6 +60,8 @@ pub enum SerializationError {
     InvalidSequenceMarker { field: &'static str, value: u64 },
     #[error("decoded length {value} for field {field} cannot be represented as usize")]
     DecodedLengthOutOfRange { field: &'static str, value: u64 },
+    #[error("decoded {actual} array elements, but exactly {expected} were required")]
+    ArrayLengthMismatch { expected: usize, actual: usize },
     /// A decoded collection count exceeded the receiver policy before the
     /// collection was allocated or the rejected element was read.
     ///

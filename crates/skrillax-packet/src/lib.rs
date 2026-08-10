@@ -62,7 +62,9 @@ use skrillax_codec::{
     MASSIVE_HEADER_MODE, MASSIVE_PACKET_OPCODE, MAX_MASSIVE_CONTAINER_INNER_SIZE, SilkroadFrame,
 };
 use skrillax_security::handshake::CheckBytesInitialization;
-use skrillax_security::{Checksum, ChecksumBuilder, MessageCounter, SilkroadEncryption};
+use skrillax_security::{
+    Checksum, ChecksumBuilder, MessageCounter, SilkroadEncryption, SilkroadSecurityError,
+};
 use std::sync::Mutex;
 use thiserror::Error;
 
@@ -83,6 +85,10 @@ pub enum PacketError {
          been established yet"
     )]
     MissingSecurity,
+    #[error("Packet type {packet} is not configured for massive framing")]
+    NonMassivePacketSequence { packet: &'static str },
+    #[error("The combined serialized size of packet type {packet} overflowed usize")]
+    PacketSizeOverflow { packet: &'static str },
 }
 
 /// Defines associated constants with this packet, which can be used to turn
@@ -242,9 +248,16 @@ where
     T: Packet + Serialize + ByteSize,
 {
     fn as_packet(&self, ctx: &SerdeContext) -> Result<OutgoingPacket, PacketError> {
-        assert!(T::MASSIVE, "Can only transform massive packets");
-        let total_size = self.iter().map(|p| p.byte_size()).sum();
-        let mut buffer = BytesMut::with_capacity(total_size);
+        if !T::MASSIVE {
+            return Err(PacketError::NonMassivePacketSequence { packet: T::NAME });
+        }
+        let total_size = self.iter().try_fold(0usize, |total, packet| {
+            total.checked_add(packet.byte_size())
+        });
+        let Some(total_size) = total_size else {
+            return Err(PacketError::PacketSizeOverflow { packet: T::NAME });
+        };
+        let mut buffer = BytesMut::with_capacity(total_size.min(MAX_MASSIVE_CONTAINER_INNER_SIZE));
         for p in self {
             p.write_to(&mut buffer, ctx)?;
         }
@@ -262,7 +275,8 @@ where
     T: Packet + Serialize + ByteSize,
 {
     fn as_packet(&self, ctx: &SerdeContext) -> Result<OutgoingPacket, PacketError> {
-        let mut buffer = BytesMut::with_capacity(self.byte_size());
+        let initial_capacity = self.byte_size().min(MAX_MASSIVE_CONTAINER_INNER_SIZE);
+        let mut buffer = BytesMut::with_capacity(initial_capacity);
         self.write_to(&mut buffer, ctx)?;
         if Self::MASSIVE {
             Ok(OutgoingPacket::Massive {
@@ -293,6 +307,8 @@ pub enum FramingError {
     MassiveContainerTooLarge { actual: usize, maximum: usize },
     #[error("Massive packet has {actual} containers, but the maximum is {maximum}")]
     TooManyMassiveContainers { actual: usize, maximum: usize },
+    #[error("Could not encrypt frame data")]
+    Encryption(#[source] SilkroadSecurityError),
 }
 
 /// A procedure to turn an element into actual [SilkroadFrame]s,
@@ -345,7 +361,7 @@ impl AsFrames for OutgoingPacket {
 
                 encryption
                     .encrypt_mut(&mut new_buffer)
-                    .expect("Should be able to encrypt");
+                    .map_err(FramingError::Encryption)?;
                 Ok(vec![SilkroadFrame::Encrypted {
                     content_size: frame_content_size.as_usize(),
                     encrypted_data: new_buffer.freeze(),
@@ -450,6 +466,8 @@ pub enum ReframingError {
     MissingSecurity,
     #[error("The decryption of an encrypted packet did not yield a simple frame")]
     InvalidEncryptedData,
+    #[error("Could not decrypt encrypted frame data")]
+    Decryption(#[source] SilkroadSecurityError),
     #[error("Could not parse the decrypted encrypted frame: {0}")]
     InvalidEncryptedFrame(#[from] FrameParseError),
     #[error("The CRC byte was {received} by we expected to to be {expected}")]
@@ -541,7 +559,7 @@ impl FromFrames for IncomingPacket {
 
                     let decrypted = encryption
                         .decrypt(encrypted_data)
-                        .expect("Should be able to decrypt bytes");
+                        .map_err(ReframingError::Decryption)?;
 
                     let Some(decrypted_data) = content_size
                         .checked_add(4)
@@ -704,7 +722,7 @@ impl SecurityBytes {
     pub fn generate_count_byte(&self) -> u8 {
         self.counter
             .lock()
-            .expect("Should be able to lock the counter for increasing it")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .next_byte()
     }
 
@@ -817,6 +835,25 @@ mod tests {
             matches!(result, Err(ReframingError::MixedFrames)),
             "a nested peer header must not replace an in-progress massive packet: {result:?}"
         );
+    }
+
+    #[test]
+    fn invalid_encrypted_block_length_returns_decryption_error() {
+        let encryption = SilkroadEncryption::from_key(0xFF00FF00FF00FF00);
+        let frame = SilkroadFrame::Encrypted {
+            content_size: 1,
+            encrypted_data: Bytes::from_static(&[1, 2, 3]),
+        };
+
+        let result =
+            IncomingPacket::from_frames(&[frame], SecurityContext::new(Some(&encryption), None));
+
+        assert!(matches!(
+            result,
+            Err(ReframingError::Decryption(
+                SilkroadSecurityError::InvalidBlockLength(3)
+            ))
+        ));
     }
 
     #[test]

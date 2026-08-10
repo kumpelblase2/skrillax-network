@@ -34,6 +34,56 @@ impl Serialize for RawMassive {
     }
 }
 
+struct NonMassive;
+
+impl Packet for NonMassive {
+    const ID: u16 = 0x4141;
+    const NAME: &'static str = "NonMassive";
+    const MASSIVE: bool = false;
+    const ENCRYPTED: bool = false;
+}
+
+impl ByteSize for NonMassive {
+    fn byte_size(&self) -> usize {
+        0
+    }
+}
+
+impl Serialize for NonMassive {
+    fn write_to(
+        &self,
+        _writer: &mut BytesMut,
+        _ctx: &SerdeContext,
+    ) -> Result<(), SerializationError> {
+        Ok(())
+    }
+}
+
+struct SizeOverflowMassive;
+
+impl Packet for SizeOverflowMassive {
+    const ID: u16 = 0x4240;
+    const NAME: &'static str = "SizeOverflowMassive";
+    const MASSIVE: bool = true;
+    const ENCRYPTED: bool = false;
+}
+
+impl ByteSize for SizeOverflowMassive {
+    fn byte_size(&self) -> usize {
+        usize::MAX
+    }
+}
+
+impl Serialize for SizeOverflowMassive {
+    fn write_to(
+        &self,
+        _writer: &mut BytesMut,
+        _ctx: &SerdeContext,
+    ) -> Result<(), SerializationError> {
+        Ok(())
+    }
+}
+
 struct FailingMassive;
 
 impl Packet for FailingMassive {
@@ -69,6 +119,34 @@ fn assert_failing_massive_error(result: Result<OutgoingPacket, PacketError>) {
                 enum_name: "FailingMassive"
             }
         ))
+    ));
+}
+
+#[test]
+fn massive_slice_size_overflow_returns_packet_error() {
+    let packets = [SizeOverflowMassive, SizeOverflowMassive];
+
+    let result = packets.as_slice().as_packet(&SerdeContext::default());
+
+    assert!(matches!(
+        result,
+        Err(PacketError::PacketSizeOverflow {
+            packet: "SizeOverflowMassive"
+        })
+    ));
+}
+
+#[test]
+fn non_massive_slice_returns_packet_error() {
+    let packets = [NonMassive];
+
+    let result = packets.as_slice().as_packet(&SerdeContext::default());
+
+    assert!(matches!(
+        result,
+        Err(PacketError::NonMassivePacketSequence {
+            packet: "NonMassive"
+        })
     ));
 }
 

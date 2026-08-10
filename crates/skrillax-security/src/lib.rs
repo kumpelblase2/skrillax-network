@@ -59,6 +59,9 @@ pub enum SilkroadSecurityError {
     /// for decryption.
     #[error("{0} is an invalid block length")]
     InvalidBlockLength(usize),
+    /// Padding the plaintext length to an encryption block would overflow.
+    #[error("plaintext length {length} cannot be padded to an encryption block")]
+    EncryptedLengthOverflow { length: usize },
     /// We calculated a different secret than the client, something went wrong
     /// in the handshake.
     #[error("Local calculated key was {calculated} but received {received}")]
@@ -139,7 +142,7 @@ impl SilkroadEncryption {
     /// be padded automatically to the necessary block length. Use
     /// [encrypt_mut][Self::encrypt_mut()] for encryption in place.
     pub fn encrypt(&self, data: &[u8]) -> Result<Bytes, SilkroadSecurityError> {
-        let target_buffer_size = Self::find_encrypted_length(data.len());
+        let target_buffer_size = Self::find_encrypted_length(data.len())?;
         let mut result = bytes::BytesMut::with_capacity(target_buffer_size);
         result.extend_from_slice(data);
         for _ in 0..(target_buffer_size - data.len()) {
@@ -174,17 +177,38 @@ impl SilkroadEncryption {
     /// Given the current length of data to encrypt, calculates the length of
     /// the encrypted output, which includes padding. Can at most increase
     /// by `BLOWFISH_BLOCK_SIZE - 1`, which is `7`.
-    pub fn find_encrypted_length(given_length: usize) -> usize {
+    pub fn find_encrypted_length(given_length: usize) -> Result<usize, SilkroadSecurityError> {
         let aligned_length = given_length % BLOWFISH_BLOCK_SIZE;
         if aligned_length == 0 {
             // Already block-aligned, no need to pad
-            return given_length;
+            return Ok(given_length);
         }
 
-        given_length + (8 - aligned_length) // Add padding
+        given_length
+            .checked_add(BLOWFISH_BLOCK_SIZE - aligned_length)
+            .ok_or(SilkroadSecurityError::EncryptedLengthOverflow {
+                length: given_length,
+            })
     }
 }
 
 pub(crate) fn blowfish_from_int(key: u64) -> BlowfishLE {
     BlowfishLE::new_from_slice(&key.to_le_bytes()).expect("Could not create blowfish key")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encrypted_length_overflow_is_an_error() {
+        assert!(matches!(
+            SilkroadEncryption::find_encrypted_length(usize::MAX),
+            Err(SilkroadSecurityError::EncryptedLengthOverflow { length: usize::MAX })
+        ));
+        assert!(matches!(
+            SilkroadEncryption::find_encrypted_length(usize::MAX - 7),
+            Ok(length) if length == usize::MAX - 7
+        ));
+    }
 }

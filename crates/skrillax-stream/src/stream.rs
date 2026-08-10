@@ -9,7 +9,7 @@ use skrillax_packet::{
 };
 use skrillax_security::SilkroadEncryption;
 use skrillax_serde::SerdeContext;
-use std::any::{Any, TypeId};
+use std::any::{Any, TypeId, type_name};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::io;
@@ -40,6 +40,10 @@ pub enum OutStreamError {
     PacketError(#[from] PacketError),
     #[error("Opcode {0} was not registered.")]
     UnknownOpcode(u16),
+    /// A dynamically typed packet did not contain the type registered for its
+    /// opcode.
+    #[error(transparent)]
+    DynamicPacketType(#[from] DynamicPacketTypeError),
 }
 
 /// Errors encountered when reading packets.
@@ -65,6 +69,20 @@ pub enum InStreamError {
     /// unknown packet was received.
     #[error("Received unexpected opcode: {0:#06x}")]
     UnmatchedOpcode(u16),
+    /// A dynamically typed packet did not contain the type selected for its
+    /// callback.
+    #[error(transparent)]
+    DynamicPacketType(#[from] DynamicPacketTypeError),
+    /// A packet decoder reported a byte count that cannot advance safely
+    /// through the supplied input.
+    #[error(
+        "Decoder for opcode {opcode:#06x} consumed {consumed} bytes from an {available}-byte input"
+    )]
+    InvalidPacketConsumption {
+        opcode: u16,
+        consumed: usize,
+        available: usize,
+    },
 }
 
 /// Extensions to [TcpStream] to convert it into a silkroad stream, sending
@@ -81,7 +99,7 @@ pub trait SilkroadTcpExt {
     /// # async fn test() -> Result<(), Box<dyn Error>> {
     /// # use tokio::net::TcpStream;
     /// let stream = TcpStream::connect("127.0.0.1:1337").await?;
-    /// let registry = PacketRegistry::builder().build();
+    /// let registry = PacketRegistry::builder().build()?;
     /// let (reader, writer) = stream.into_silkroad_stream(registry);
     /// # Ok(())
     /// # }
@@ -115,42 +133,92 @@ impl SilkroadTcpExt for TcpStream {
     }
 }
 
-pub struct DynamicPacket(Box<dyn Any + Send>, u16);
+/// A failed attempt to recover a concrete packet from its type-erased form.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error("Packet with opcode {opcode:#06x} contained {actual}, but {expected} was expected")]
+pub struct DynamicPacketTypeError {
+    pub opcode: u16,
+    pub expected: &'static str,
+    pub actual: &'static str,
+}
+
+pub struct DynamicPacket {
+    inner: Box<dyn Any + Send>,
+    opcode: u16,
+    type_name: &'static str,
+}
 
 impl Debug for DynamicPacket {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "dynamic packet")
+        f.debug_struct("DynamicPacket")
+            .field("opcode", &self.opcode)
+            .field("type_name", &self.type_name)
+            .finish_non_exhaustive()
     }
 }
 
 impl DynamicPacket {
+    /// Creates a dynamic packet from an already erased value.
+    ///
+    /// Use [`DynamicPacket::from_value`] when the concrete value is still
+    /// available so type mismatch errors can include its name.
     pub fn new(opcode: u16, inner: Box<dyn Any + Send>) -> Self {
-        Self(inner, opcode)
+        Self {
+            inner,
+            opcode,
+            type_name: "an erased value",
+        }
+    }
+
+    /// Erases a concrete value while retaining its type name for diagnostics.
+    pub fn from_value<T: Any + Send>(opcode: u16, inner: T) -> Self {
+        Self {
+            inner: Box::new(inner),
+            opcode,
+            type_name: type_name::<T>(),
+        }
     }
 
     pub fn as_packet<T: 'static>(&self) -> Option<&T> {
-        self.0.downcast_ref()
+        self.inner.downcast_ref()
+    }
+
+    /// Borrows the erased packet as `T`, preserving type mismatch details.
+    pub fn try_as_packet<T: 'static>(&self) -> Result<&T, DynamicPacketTypeError> {
+        self.as_packet::<T>().ok_or_else(|| DynamicPacketTypeError {
+            opcode: self.opcode,
+            expected: type_name::<T>(),
+            actual: self.type_name,
+        })
     }
 
     pub fn into_packet<T: 'static>(self) -> Result<T, DynamicPacket> {
-        match self.0.downcast::<T>() {
-            Ok(b) => Ok(*b),
-            Err(b) => Err(DynamicPacket(b, self.1)),
+        match self.inner.downcast::<T>() {
+            Ok(packet) => Ok(*packet),
+            Err(inner) => Err(DynamicPacket {
+                inner,
+                opcode: self.opcode,
+                type_name: self.type_name,
+            }),
         }
     }
 
     pub fn packet_type(&self) -> TypeId {
-        self.0.as_ref().type_id()
+        self.inner.as_ref().type_id()
+    }
+
+    pub fn packet_type_name(&self) -> &'static str {
+        self.type_name
     }
 
     pub fn opcode(&self) -> u16 {
-        self.1
+        self.opcode
     }
 }
 
 impl<T: Packet + Send + 'static> From<T> for DynamicPacket {
     fn from(packet: T) -> Self {
-        Self(Box::new(packet), T::ID)
+        Self::from_value(T::ID, packet)
     }
 }
 
@@ -184,7 +252,8 @@ impl SharedState {
 }
 
 type BeforeWriteFrameCallback = Box<dyn Fn(&OutgoingPacket, &SerdeContext) + Send>;
-type BeforeWritePacketCallback = Box<dyn Fn(&DynamicPacket, &SerdeContext) + Send>;
+type BeforeWritePacketCallback =
+    Box<dyn Fn(&DynamicPacket, &SerdeContext) -> Result<(), DynamicPacketTypeError> + Send>;
 
 #[derive(Default)]
 struct WriteCallbacks {
@@ -212,20 +281,23 @@ impl WriteCallbacks {
     ) {
         let type_id = TypeId::of::<T>();
         let wrapper = Box::new(move |any_packet: &DynamicPacket, ctx: &SerdeContext| {
-            let packet = any_packet
-                .as_packet::<T>()
-                .expect("T should match it's type id");
+            let packet = any_packet.try_as_packet::<T>()?;
             func(packet, ctx);
+            Ok(())
         });
         self.before_write_packet.insert(type_id, wrapper);
     }
 
-    fn call_for_packet(&self, packet: &DynamicPacket, context: &SerdeContext) {
+    fn call_for_packet(
+        &self,
+        packet: &DynamicPacket,
+        context: &SerdeContext,
+    ) -> Result<(), DynamicPacketTypeError> {
         let Some(handler) = self.before_write_packet.get(&packet.packet_type()) else {
-            return;
+            return Ok(());
         };
 
-        handler(packet, context);
+        handler(packet, context)
     }
 }
 
@@ -328,8 +400,8 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
     ) -> Result<(), OutStreamError> {
         let context = self.state.as_context();
         let packet = packet.into();
-        self.write_callbacks.call_for_packet(&packet, &context);
-        let outgoing_packet = self.registry.encode(packet.opcode(), packet, &context)?;
+        self.write_callbacks.call_for_packet(&packet, &context)?;
+        let outgoing_packet = self.registry.encode(packet, &context)?;
         self.write_callbacks
             .call_for_frame(&outgoing_packet, &context);
         self.write(outgoing_packet).await
@@ -341,7 +413,9 @@ impl<T: AsyncWrite + Unpin> SilkroadStreamWrite<T> {
 }
 
 type AfterReadFrameCallback = Box<dyn Fn(&IncomingPacket, &SerdeContext) + Send + 'static>;
-type AfterReadPacketCallback = Box<dyn Fn(&DynamicPacket, &SerdeContext) + Send + 'static>;
+type AfterReadPacketCallback = Box<
+    dyn Fn(&DynamicPacket, &SerdeContext) -> Result<(), DynamicPacketTypeError> + Send + 'static,
+>;
 
 #[derive(Default)]
 struct ReadCallbacks {
@@ -369,20 +443,23 @@ impl ReadCallbacks {
     ) {
         let type_id = TypeId::of::<T>();
         let wrapper = Box::new(move |any_packet: &DynamicPacket, ctx: &SerdeContext| {
-            let packet = any_packet
-                .as_packet::<T>()
-                .expect("T should match it's type id");
+            let packet = any_packet.try_as_packet::<T>()?;
             func(packet, ctx);
+            Ok(())
         });
         self.after_read_packet.insert(type_id, wrapper);
     }
 
-    fn call_for_packet(&self, packet: &DynamicPacket, context: &SerdeContext) {
+    fn call_for_packet(
+        &self,
+        packet: &DynamicPacket,
+        context: &SerdeContext,
+    ) -> Result<(), DynamicPacketTypeError> {
         let Some(handler) = self.after_read_packet.get(&packet.packet_type()) else {
-            return;
+            return Ok(());
         };
 
-        handler(packet, context);
+        handler(packet, context)
     }
 }
 
@@ -553,7 +630,7 @@ where
             self.unconsumed = Some((opcode, buffer));
         }
 
-        self.read_callbacks.call_for_packet(&p, &context);
+        self.read_callbacks.call_for_packet(&p, &context)?;
         self.state.set_last_received(opcode);
         Ok(p)
     }
@@ -661,7 +738,10 @@ mod test {
     #[tokio::test]
     pub async fn test_read_packet_from_stream() {
         let buffer: &[u8] = &[0x00, 0x00, 0x42, 0x00, 0x00, 0x00];
-        let registry = PacketRegistry::builder().register::<Empty>().build();
+        let registry = PacketRegistry::builder()
+            .register::<Empty>()
+            .build()
+            .expect("unique packet registration should succeed");
         let mut reader = SilkroadStreamRead::new(
             FramedRead::new(buffer, SilkroadCodec),
             registry,
@@ -699,7 +779,9 @@ mod test {
         );
         let mut reader = SilkroadStreamRead::new(
             FramedRead::new(wire.as_slice(), SilkroadCodec),
-            PacketRegistry::builder().build(),
+            PacketRegistry::builder()
+                .build()
+                .expect("empty registry should build"),
             SharedState::new(),
         );
 
@@ -728,7 +810,9 @@ mod test {
         .expect("the zero-container header should be representable");
         let mut reader = SilkroadStreamRead::new(
             FramedRead::new(wire.as_ref(), SilkroadCodec),
-            PacketRegistry::builder().build(),
+            PacketRegistry::builder()
+                .build()
+                .expect("empty registry should build"),
             SharedState::new(),
         );
 
@@ -745,7 +829,10 @@ mod test {
         let mut buffer: Vec<u8> = Vec::new();
         let mut writer = SilkroadStreamWrite::new(
             FramedWrite::new(&mut buffer, SilkroadCodec),
-            PacketRegistry::builder().register::<Empty>().build(),
+            PacketRegistry::builder()
+                .register::<Empty>()
+                .build()
+                .expect("unique packet registration should succeed"),
             SharedState::new(),
         );
         writer
@@ -761,14 +848,11 @@ mod test {
     fn packet_registry_encode_preserves_serialization_failure() {
         let registry = PacketRegistry::builder()
             .register_outgoing::<FailingPacket>()
-            .build();
+            .build()
+            .expect("unique packet registration should succeed");
 
         let error = registry
-            .encode(
-                FailingPacket::ID,
-                FailingPacket.into(),
-                &SerdeContext::default(),
-            )
+            .encode(FailingPacket.into(), &SerdeContext::default())
             .expect_err("packet construction should fail");
 
         assert_failing_packet_error(error);
@@ -779,7 +863,8 @@ mod test {
         let mut buffer = Vec::new();
         let registry = PacketRegistry::builder()
             .register_outgoing::<FailingPacket>()
-            .build();
+            .build()
+            .expect("unique packet registration should succeed");
         let mut writer = SilkroadStreamWrite::new(
             FramedWrite::new(&mut buffer, SilkroadCodec),
             registry,
@@ -805,7 +890,9 @@ mod test {
         let mut buffer = Vec::new();
         let mut writer = SilkroadStreamWrite::new(
             FramedWrite::new(&mut buffer, SilkroadCodec),
-            PacketRegistry::builder().build(),
+            PacketRegistry::builder()
+                .build()
+                .expect("empty registry should build"),
             SharedState::new(),
         );
         let packet = OutgoingPacket::Simple {
@@ -833,7 +920,9 @@ mod test {
     async fn transport_failure_does_not_update_last_sent() {
         let mut writer = SilkroadStreamWrite::new(
             FramedWrite::new(FailingWrite, SilkroadCodec),
-            PacketRegistry::builder().build(),
+            PacketRegistry::builder()
+                .build()
+                .expect("empty registry should build"),
             SharedState::new(),
         );
 
@@ -856,7 +945,8 @@ mod test {
         let registry = PacketRegistry::builder()
             .register::<Empty>()
             .register::<Conditional>()
-            .build();
+            .build()
+            .expect("unique packet registrations should succeed");
         let mut writer = SilkroadStreamWrite::new(
             FramedWrite::new(&mut buffer, SilkroadCodec),
             registry.clone(),
