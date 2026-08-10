@@ -758,6 +758,28 @@ impl FreePaths {
         let name = ident.to_string();
         self.scopes.iter().rev().any(|scope| scope.contains(&name))
     }
+
+    fn visit_condition(&mut self, condition: &Expr) -> HashSet<String> {
+        match condition {
+            Expr::Let(binding) => {
+                self.visit_expr(&binding.expr);
+                pattern_identifiers(&binding.pat)
+            },
+            Expr::Binary(binary) if matches!(&binary.op, syn::BinOp::And(_)) => {
+                let mut bindings = self.visit_condition(&binary.left);
+                self.scopes.push(bindings.clone());
+                bindings.extend(self.visit_condition(&binary.right));
+                self.scopes.pop();
+                bindings
+            },
+            Expr::Paren(parenthesized) => self.visit_condition(&parenthesized.expr),
+            Expr::Group(grouped) => self.visit_condition(&grouped.expr),
+            _ => {
+                self.visit_expr(condition);
+                HashSet::new()
+            },
+        }
+    }
 }
 
 impl<'ast> Visit<'ast> for FreePaths {
@@ -822,6 +844,23 @@ impl<'ast> Visit<'ast> for FreePaths {
     fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
         self.visit_expr(&expression.expr);
         self.scopes.push(pattern_identifiers(&expression.pat));
+        self.visit_block(&expression.body);
+        self.scopes.pop();
+    }
+
+    fn visit_expr_if(&mut self, expression: &'ast syn::ExprIf) {
+        let bindings = self.visit_condition(&expression.cond);
+        self.scopes.push(bindings);
+        self.visit_block(&expression.then_branch);
+        self.scopes.pop();
+        if let Some((_, else_branch)) = &expression.else_branch {
+            self.visit_expr(else_branch);
+        }
+    }
+
+    fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
+        let bindings = self.visit_condition(&expression.cond);
+        self.scopes.push(bindings);
         self.visit_block(&expression.body);
         self.scopes.pop();
     }

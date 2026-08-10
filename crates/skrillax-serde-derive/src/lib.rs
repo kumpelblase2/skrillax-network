@@ -118,6 +118,11 @@
 //! equal `Option::is_some()` or serialization returns
 //! `ConditionalPresenceMismatch`.
 //!
+//! Expressions follow Rust's lexical binding scopes. Closure parameters,
+//! block locals, match and loop patterns, and `if let`/`while let` bindings
+//! shadow packet field names; bindings in a let chain are visible to the rest
+//! of the chain and its guarded body, but not to an `else` branch.
+//!
 //! ```ignore
 //! #[derive(Serialize, Deserialize, ByteSize)]
 //! struct Greeting {

@@ -95,6 +95,19 @@ where
     assert_eq!(expected, converted.as_ref());
 }
 
+fn assert_context_round_trip<T>(value: T, expected: &[u8], ctx: &SerdeContext)
+where
+    T: Serialize + Deserialize + ByteSize + Eq + Debug,
+{
+    assert_eq!(expected.len(), value.byte_size());
+    let mut output = BytesMut::new();
+    value
+        .write_to(&mut output, ctx)
+        .expect("serialization with context failed");
+    assert_eq!(expected, output.as_ref());
+    assert_eq!(value, assert_deserializes_exactly(expected, ctx));
+}
+
 /// Deserialize a value with a trailing canary and verify that the reader
 /// consumed exactly the value, not any following bytes.
 fn assert_deserializes_exactly<T>(expected: &[u8], ctx: &SerdeContext) -> T
@@ -1332,6 +1345,70 @@ fn predicate_serialization_enforces_first_match_order() {
 
 #[derive(Clone, Copy)]
 struct Selection(u8);
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct BindingScopeConditions {
+    selection: u8,
+    #[silkroad(
+        when = "if let Some(selection) = ctx.get::<Selection>() { selection.0 == 1 } else { \
+                selection == 7 }"
+    )]
+    if_let_value: Option<u8>,
+    #[silkroad(
+        when = "if let Some(later) = ctx.get::<Selection>() && later.0 == 1 { true } else { false \
+                }"
+    )]
+    let_chain_value: Option<u8>,
+    #[silkroad(when = "{ let mut enabled = false; while let Some(later) = \
+                       ctx.get::<Selection>() { enabled = later.0 == 1; break; } enabled }")]
+    while_let_value: Option<u8>,
+    later: u8,
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+#[silkroad(size = 0)]
+enum ScopedPredicateEnum {
+    #[silkroad(
+        when = "if let Some(value) = ctx.get::<Selection>() { value.0 == 1 } else { false }"
+    )]
+    Selected { value: u8 },
+}
+
+#[test]
+fn expression_rewriting_honors_if_and_while_let_bindings() {
+    let selected = SerdeContext::default();
+    selected.set(Selection(1));
+    assert_context_round_trip(
+        BindingScopeConditions {
+            selection: 0,
+            if_let_value: Some(2),
+            let_chain_value: Some(3),
+            while_let_value: Some(4),
+            later: 5,
+        },
+        &[0, 2, 3, 4, 5],
+        &selected,
+    );
+
+    assert_round_trip(
+        BindingScopeConditions {
+            selection: 7,
+            if_let_value: Some(2),
+            let_chain_value: None,
+            while_let_value: None,
+            later: 5,
+        },
+        &[7, 2, 5],
+        &SerdeContext::default(),
+    );
+}
+
+#[test]
+fn enum_predicates_ignore_locally_bound_body_field_names() {
+    let context = SerdeContext::default();
+    context.set(Selection(1));
+    assert_context_round_trip(ScopedPredicateEnum::Selected { value: 9 }, &[9], &context);
+}
 
 #[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
 #[silkroad(size = 0)]

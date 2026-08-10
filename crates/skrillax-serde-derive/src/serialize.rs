@@ -445,6 +445,28 @@ impl ExpressionRewriter<'_> {
         let name = ident.to_string();
         self.scopes.iter().rev().any(|scope| scope.contains(&name))
     }
+
+    fn rewrite_condition(&mut self, condition: &mut Expr) -> HashSet<String> {
+        match condition {
+            Expr::Let(binding) => {
+                self.visit_expr_mut(&mut binding.expr);
+                pattern_bindings(&binding.pat)
+            },
+            Expr::Binary(binary) if matches!(&binary.op, syn::BinOp::And(_)) => {
+                let mut bindings = self.rewrite_condition(&mut binary.left);
+                self.scopes.push(bindings.clone());
+                bindings.extend(self.rewrite_condition(&mut binary.right));
+                self.scopes.pop();
+                bindings
+            },
+            Expr::Paren(parenthesized) => self.rewrite_condition(&mut parenthesized.expr),
+            Expr::Group(grouped) => self.rewrite_condition(&mut grouped.expr),
+            _ => {
+                self.visit_expr_mut(condition);
+                HashSet::new()
+            },
+        }
+    }
 }
 
 impl VisitMut for ExpressionRewriter<'_> {
@@ -523,6 +545,23 @@ impl VisitMut for ExpressionRewriter<'_> {
     fn visit_expr_for_loop_mut(&mut self, expression: &mut syn::ExprForLoop) {
         self.visit_expr_mut(&mut expression.expr);
         self.scopes.push(pattern_bindings(&expression.pat));
+        self.visit_block_mut(&mut expression.body);
+        self.scopes.pop();
+    }
+
+    fn visit_expr_if_mut(&mut self, expression: &mut syn::ExprIf) {
+        let bindings = self.rewrite_condition(&mut expression.cond);
+        self.scopes.push(bindings);
+        self.visit_block_mut(&mut expression.then_branch);
+        self.scopes.pop();
+        if let Some((_, else_branch)) = &mut expression.else_branch {
+            self.visit_expr_mut(else_branch);
+        }
+    }
+
+    fn visit_expr_while_mut(&mut self, expression: &mut syn::ExprWhile) {
+        let bindings = self.rewrite_condition(&mut expression.cond);
+        self.scopes.push(bindings);
         self.visit_block_mut(&mut expression.body);
         self.scopes.pop();
     }
