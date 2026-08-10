@@ -8,7 +8,7 @@ use skrillax_packet::{
     PacketError, ReframingError, ReframingLimits, SecurityBytes, SecurityContext,
 };
 use skrillax_security::SilkroadEncryption;
-use skrillax_serde::SerdeContext;
+use skrillax_serde::{DeserializationLimits, SerdeContext};
 use std::any::{Any, TypeId, type_name};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
@@ -88,6 +88,16 @@ pub enum InStreamError {
         available: usize,
     },
 }
+
+/// Maximum number of elements accepted in each collection decoded by a newly
+/// created stream.
+///
+/// The limit is intentionally applied at the network adapter rather than by
+/// [`SerdeContext::default`], because direct deserialization may operate on
+/// trusted data or require the protocol's full count range. Applications can
+/// replace or remove this receiver policy through
+/// [`SilkroadStreamRead::context`].
+pub const DEFAULT_MAX_COLLECTION_ELEMENTS: usize = 10_000;
 
 /// Extensions to [TcpStream] to convert it into a silkroad stream, sending
 /// and receiving silkroad packets.
@@ -226,7 +236,7 @@ impl<T: Packet + Send + 'static> From<T> for DynamicPacket {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct SharedState {
     encryption: Option<Arc<SilkroadEncryption>>,
     security_bytes: Option<Arc<SecurityBytes>>,
@@ -235,10 +245,14 @@ struct SharedState {
 
 impl SharedState {
     fn new() -> Self {
+        let state = SerdeContext::default();
+        state.set_deserialization_limits(DeserializationLimits::with_max_collection_elements(
+            DEFAULT_MAX_COLLECTION_ELEMENTS,
+        ));
         Self {
             encryption: None,
             security_bytes: None,
-            state: SerdeContext::default(),
+            state,
         }
     }
 
@@ -252,6 +266,12 @@ impl SharedState {
 
     pub fn set_last_sent(&self, opcode: u16) {
         self.state.set(LastSentPacket(opcode))
+    }
+}
+
+impl Default for SharedState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -470,7 +490,10 @@ impl ReadCallbacks {
 /// The reading side of a Silkroad Online connection.
 ///
 /// This is an analog to [OwnedReadHalf], containing additional state to
-/// facilitate a Silkroad connection, such as encryption.
+/// facilitate a Silkroad connection, such as encryption. Newly created TCP
+/// streams reject collections larger than [`DEFAULT_MAX_COLLECTION_ELEMENTS`]
+/// by default. Use [`SilkroadStreamRead::context`] to replace that policy or
+/// call [`SerdeContext::clear_deserialization_limits`] to opt out.
 pub struct SilkroadStreamRead<T: AsyncRead + Unpin> {
     reader: FramedRead<T, SilkroadCodec>,
     registry: PacketRegistry,
@@ -659,7 +682,11 @@ where
         Err(InStreamError::EndOfStream)
     }
 
-    /// Tries to serialize the next incoming packet into the given protocol.
+    /// Tries to deserialize the next incoming packet into the given protocol.
+    ///
+    /// Collection lengths are checked against the receiver policy available
+    /// through [`SilkroadStreamRead::context`]. Newly created streams default
+    /// to [`DEFAULT_MAX_COLLECTION_ELEMENTS`] elements per collection.
     ///
     /// This will poll the underlying transport layer to read a new packet
     /// and will then try to serialize into a matching packet of the given
@@ -684,6 +711,12 @@ where
         Ok(p)
     }
 
+    /// Returns the shared serialization context for this stream.
+    ///
+    /// The returned clone shares its configuration with the reader. Use
+    /// [`SerdeContext::set_deserialization_limits`] to replace the default
+    /// collection policy, or [`SerdeContext::clear_deserialization_limits`] to
+    /// accept the protocol's full collection count range.
     pub fn context(&self) -> SerdeContext {
         self.state.as_context()
     }
@@ -770,6 +803,10 @@ mod test {
     #[packet(opcode = 0x0042)]
     struct Empty;
 
+    #[derive(Packet, Deserialize, Serialize, ByteSize)]
+    #[packet(opcode = 0x0045)]
+    struct CollectionPacket(#[silkroad(size = 2)] Vec<u8>);
+
     struct FailingPacket;
 
     impl Packet for FailingPacket {
@@ -838,6 +875,63 @@ mod test {
             .await
             .expect("Should read empty packet.");
         assert!(p.into_packet::<Empty>().is_ok());
+    }
+
+    #[tokio::test]
+    async fn stream_default_rejects_oversized_collections() {
+        let declared = u16::try_from(DEFAULT_MAX_COLLECTION_ELEMENTS + 1)
+            .expect("the default collection limit should fit in the test prefix");
+        let wire = SilkroadFrame::Packet {
+            count: 0,
+            crc: 0,
+            opcode: CollectionPacket::ID,
+            data: Bytes::copy_from_slice(&declared.to_le_bytes()),
+        }
+        .serialize()
+        .expect("the collection packet should be representable");
+        let mut reader = SilkroadStreamRead::new(
+            FramedRead::new(wire.as_ref(), SilkroadCodec),
+            PacketRegistry::builder()
+                .register::<CollectionPacket>()
+                .build()
+                .expect("unique packet registration should succeed"),
+            SharedState::new(),
+        );
+
+        let error = reader
+            .next_packet()
+            .await
+            .expect_err("the stream default should reject the declared collection");
+
+        assert!(matches!(
+            error,
+            InStreamError::PacketError(PacketError::SerializationError(
+                SerializationError::CollectionLengthLimitExceeded {
+                    field: "t0",
+                    actual,
+                    maximum: DEFAULT_MAX_COLLECTION_ELEMENTS,
+                }
+            )) if actual == u64::from(declared)
+        ));
+    }
+
+    #[test]
+    fn stream_collection_limit_can_be_removed_explicitly() {
+        let state = SharedState::default();
+        assert_eq!(
+            state
+                .as_context()
+                .deserialization_limits()
+                .max_collection_elements(),
+            Some(DEFAULT_MAX_COLLECTION_ELEMENTS)
+        );
+
+        state.as_context().clear_deserialization_limits();
+
+        assert_eq!(
+            state.as_context().deserialization_limits(),
+            DeserializationLimits::unlimited()
+        );
     }
 
     #[tokio::test]

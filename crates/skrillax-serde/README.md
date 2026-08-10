@@ -124,7 +124,9 @@ context.set_deserialization_limits(
 ```
 
 Choose a maximum appropriate for the application's packet models; there is no
-universal safe value. Counted and calculated collections are checked before
+universal safe value. The high-level `skrillax-stream` network adapter applies
+its own documented conservative default while direct serde use remains
+unlimited. Counted and calculated collections are checked before
 allocation and element decoding. Sentinel-framed collections are checked before
 each announced element. Capacity reservation is fallible even when no policy is
 configured, so capacity overflow and allocator failures reported by
