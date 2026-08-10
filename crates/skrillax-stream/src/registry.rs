@@ -350,4 +350,44 @@ mod tests {
             }
         ));
     }
+
+    struct ZeroConsumption;
+
+    impl Packet for ZeroConsumption {
+        const ID: u16 = 0x4444;
+        const NAME: &'static str = "ZeroConsumption";
+        const MASSIVE: bool = false;
+        const ENCRYPTED: bool = false;
+    }
+
+    impl TryFromPacket for ZeroConsumption {
+        fn try_deserialize(
+            _data: &[u8],
+            _ctx: &SerdeContext,
+        ) -> Result<(usize, Self), PacketError> {
+            Ok((0, Self))
+        }
+    }
+
+    #[test]
+    fn zero_decoder_consumption_of_nonempty_input_is_an_error() {
+        let registry = PacketRegistry::builder()
+            .register_incoming::<ZeroConsumption>()
+            .build()
+            .expect("unique packet registration should succeed");
+        let data = [1];
+
+        let error = registry
+            .decode(ZeroConsumption::ID, &data, &SerdeContext::default())
+            .expect_err("a decoder must make progress through nonempty input");
+
+        assert!(matches!(
+            error,
+            InStreamError::InvalidPacketConsumption {
+                opcode: ZeroConsumption::ID,
+                consumed: 0,
+                available: 1,
+            }
+        ));
+    }
 }
