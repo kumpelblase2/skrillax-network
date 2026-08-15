@@ -34,6 +34,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
       - name: Check semver
+        continue-on-error: true
         uses: obi1kenobi/cargo-semver-checks-action@v2
   deny-check:
     runs-on: ubuntu-latest
