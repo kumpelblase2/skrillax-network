@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     name: nightly fmt
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: install toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     name: clippy
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: install toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -32,7 +32,7 @@ jobs:
     name: semver checks
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Check semver
         continue-on-error: true
         uses: obi1kenobi/cargo-semver-checks-action@v2
@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     name: cargo deny
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           rust-version: stable
