@@ -1285,6 +1285,33 @@ fn expression_rewriting_preserves_closure_bindings() {
 }
 
 #[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct MatchesCondition {
+    previous_field: u8,
+    #[silkroad(when = "matches!(previous_field, 0x08)")]
+    optional: Option<u16>,
+}
+
+#[test]
+fn expression_rewriting_handles_matches_macro() {
+    assert_round_trip(
+        MatchesCondition {
+            previous_field: 0x08,
+            optional: Some(0x1234),
+        },
+        &[0x08, 0x34, 0x12],
+        &SerdeContext::default(),
+    );
+    assert_round_trip(
+        MatchesCondition {
+            previous_field: 0x07,
+            optional: None,
+        },
+        &[0x07],
+        &SerdeContext::default(),
+    );
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
 struct ReservedFieldNames {
     reader: u8,
     ctx: u8,

@@ -1,3 +1,4 @@
+use crate::expression::MatchesMacro;
 use darling::{FromAttributes, FromDeriveInput};
 use proc_macro2::{Ident, Span};
 use proc_macro2_diagnostics::{Diagnostic, SpanDiagnosticExt};
@@ -792,6 +793,24 @@ impl<'ast> Visit<'ast> for FreePaths {
             self.paths.insert(path.path.segments[0].ident.to_string());
         }
         syn::visit::visit_expr_path(self, path);
+    }
+
+    fn visit_expr_macro(&mut self, expression: &'ast syn::ExprMacro) {
+        let Some(matches) = MatchesMacro::parse(expression) else {
+            syn::visit::visit_expr_macro(self, expression);
+            return;
+        };
+
+        let mut paths = FreePaths {
+            paths: HashSet::new(),
+            scopes: self.scopes.clone(),
+        };
+        paths.visit_expr(&matches.value);
+        if let Some((_, guard)) = &matches.guard {
+            paths.scopes.push(pattern_identifiers(&matches.pattern));
+            paths.visit_expr(guard);
+        }
+        self.paths.extend(paths.paths);
     }
 
     fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {

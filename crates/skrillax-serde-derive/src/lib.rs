@@ -217,6 +217,7 @@ use quote::quote;
 use syn::DeriveInput;
 
 mod deserialize;
+mod expression;
 mod model;
 mod serialize;
 mod size;

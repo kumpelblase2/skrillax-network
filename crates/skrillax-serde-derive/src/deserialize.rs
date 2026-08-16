@@ -1,3 +1,4 @@
+use crate::expression::MatchesMacro;
 use crate::model::{
     DataModel, FieldModel, FieldRole, IntegerWidth, Presence, SequenceFraming, StringEncoding,
     VariantModel, VariantSelector, WireModel, WireType,
@@ -574,6 +575,21 @@ impl VisitMut for ExpressionRewriter<'_> {
             }
         }
         syn::visit_mut::visit_expr_mut(self, expression);
+    }
+
+    fn visit_expr_macro_mut(&mut self, expression: &mut syn::ExprMacro) {
+        let Some(mut matches) = MatchesMacro::parse(expression) else {
+            syn::visit_mut::visit_expr_macro_mut(self, expression);
+            return;
+        };
+
+        self.visit_expr_mut(&mut matches.value);
+        if let Some((_, guard)) = &mut matches.guard {
+            self.scopes.push(pattern_bindings(&matches.pattern));
+            self.visit_expr_mut(guard);
+            self.scopes.pop();
+        }
+        expression.mac.tokens = quote!(#matches);
     }
 
     fn visit_expr_closure_mut(&mut self, closure: &mut syn::ExprClosure) {
