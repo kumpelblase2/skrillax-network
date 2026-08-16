@@ -1,0 +1,38 @@
+[workspace]
+release_always = false
+
+repo_url = "https://github.com/kumpelblase2/skrillax-network"
+pr_branch_prefix = "release-plz-"
+git_tag_name = "{{ package }}-v{{ version }}"
+
+# We don't want to release _all_ crates, so we default to not releasing and just
+# turn on those which we _do_ want to release.
+release = false
+
+[[package]]
+name = "skrillax-codec"
+release = true
+
+[[package]]
+name = "skrillax-security"
+release = true
+
+[[package]]
+name = "skrillax-packet-derive"
+release = true
+
+[[package]]
+name = "skrillax-serde-derive"
+release = true
+
+[[package]]
+name = "skrillax-serde"
+release = true
+
+[[package]]
+name = "skrillax-packet"
+release = true
+
+[[package]]
+name = "skrillax-stream"
+release = true
