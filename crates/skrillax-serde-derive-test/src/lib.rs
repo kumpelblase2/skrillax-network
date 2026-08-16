@@ -1516,3 +1516,209 @@ fn zero_width_enums_use_context_and_report_no_match() {
         }
     ));
 }
+
+#[derive(Clone)]
+struct HookLog(std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>);
+
+#[derive(Clone)]
+struct FailingHook(&'static str);
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+#[silkroad(
+    before_serialize = "Self::before_serialize",
+    after_serialize = "finish_hooked_packet",
+    before_deserialize = "Self::before_deserialize",
+    after_deserialize = "Self::after_deserialize"
+)]
+struct HookedPacket(u8);
+
+impl HookedPacket {
+    fn record(ctx: &SerdeContext, event: &'static str) -> Result<(), SerializationError> {
+        ctx.get::<HookLog>()
+            .expect("hook log missing from context")
+            .0
+            .lock()
+            .expect("hook log lock poisoned")
+            .push(event);
+        if ctx
+            .get::<FailingHook>()
+            .is_some_and(|failure| failure.0 == event)
+        {
+            return Err(SerializationError::CalculatedLengthOutOfRange { field: event });
+        }
+        Ok(())
+    }
+
+    fn before_serialize(_packet: &Self, ctx: &SerdeContext) -> Result<(), SerializationError> {
+        Self::record(ctx, "before_serialize")
+    }
+
+    fn before_deserialize(ctx: &SerdeContext) -> Result<(), SerializationError> {
+        Self::record(ctx, "before_deserialize")
+    }
+
+    fn after_deserialize(_packet: &Self, ctx: &SerdeContext) -> Result<(), SerializationError> {
+        Self::record(ctx, "after_deserialize")
+    }
+}
+
+fn finish_hooked_packet(
+    _packet: &HookedPacket,
+    ctx: &SerdeContext,
+) -> Result<(), SerializationError> {
+    HookedPacket::record(ctx, "after_serialize")
+}
+
+#[derive(Serialize, ByteSize, Deserialize, Eq, PartialEq, Debug)]
+struct HookedEnvelope(HookedPacket);
+
+#[test]
+fn container_hooks_run_around_successful_wire_operations() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let ctx = SerdeContext::default();
+    ctx.set(HookLog(events.clone()));
+    let packet = HookedPacket(7);
+
+    assert_eq!(packet.byte_size(), 1);
+    assert!(events.lock().unwrap().is_empty(), "ByteSize ran hooks");
+
+    let mut output = BytesMut::new();
+    packet.write_to(&mut output, &ctx).unwrap();
+    assert_eq!(output.as_ref(), &[7]);
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &["before_serialize", "after_serialize"]
+    );
+
+    events.lock().unwrap().clear();
+    let decoded = HookedPacket::read_from(&mut Cursor::new([9]), &ctx).unwrap();
+    assert_eq!(decoded, HookedPacket(9));
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &["before_deserialize", "after_deserialize"]
+    );
+
+    events.lock().unwrap().clear();
+    let envelope = HookedEnvelope(HookedPacket(11));
+    assert_eq!(envelope.byte_size(), 1);
+    assert!(
+        events.lock().unwrap().is_empty(),
+        "nested ByteSize ran hooks"
+    );
+    envelope.write_to(&mut BytesMut::new(), &ctx).unwrap();
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &["before_serialize", "after_serialize"]
+    );
+
+    events.lock().unwrap().clear();
+    let decoded = HookedEnvelope::read_from(&mut Cursor::new([12]), &ctx).unwrap();
+    assert_eq!(decoded, HookedEnvelope(HookedPacket(12)));
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &["before_deserialize", "after_deserialize"]
+    );
+}
+
+#[test]
+fn hook_errors_are_propagated_at_each_lifecycle_point() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let ctx = SerdeContext::default();
+    ctx.set(HookLog(events));
+
+    ctx.set(FailingHook("before_serialize"));
+    let mut output = BytesMut::new();
+    let error = HookedPacket(1).write_to(&mut output, &ctx).unwrap_err();
+    assert!(matches!(
+        error,
+        SerializationError::CalculatedLengthOutOfRange {
+            field: "before_serialize"
+        }
+    ));
+    assert!(output.is_empty());
+
+    ctx.set(FailingHook("after_serialize"));
+    let mut output = BytesMut::new();
+    let error = HookedPacket(2).write_to(&mut output, &ctx).unwrap_err();
+    assert!(matches!(
+        error,
+        SerializationError::CalculatedLengthOutOfRange {
+            field: "after_serialize"
+        }
+    ));
+    assert_eq!(output.as_ref(), &[2]);
+
+    ctx.set(FailingHook("before_deserialize"));
+    let mut input = Cursor::new([3]);
+    let error = HookedPacket::read_from(&mut input, &ctx).unwrap_err();
+    assert!(matches!(
+        error,
+        SerializationError::CalculatedLengthOutOfRange {
+            field: "before_deserialize"
+        }
+    ));
+    assert_eq!(input.position(), 0);
+
+    ctx.set(FailingHook("after_deserialize"));
+    let mut input = Cursor::new([4]);
+    let error = HookedPacket::read_from(&mut input, &ctx).unwrap_err();
+    assert!(matches!(
+        error,
+        SerializationError::CalculatedLengthOutOfRange {
+            field: "after_deserialize"
+        }
+    ));
+    assert_eq!(input.position(), 1);
+}
+
+#[derive(Serialize, ByteSize)]
+#[silkroad(
+    before_serialize = "Self::before_serialize",
+    after_serialize = "Self::after_serialize"
+)]
+struct HookedSerializationFailure(FailingElement);
+
+impl HookedSerializationFailure {
+    fn before_serialize(_packet: &Self, ctx: &SerdeContext) -> Result<(), SerializationError> {
+        HookedPacket::record(ctx, "before_serialize")
+    }
+
+    fn after_serialize(_packet: &Self, ctx: &SerdeContext) -> Result<(), SerializationError> {
+        HookedPacket::record(ctx, "after_serialize")
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize, Debug)]
+#[silkroad(
+    before_deserialize = "Self::before_deserialize",
+    after_deserialize = "Self::after_deserialize"
+)]
+struct HookedDeserializationFailure(u16);
+
+impl HookedDeserializationFailure {
+    fn before_deserialize(ctx: &SerdeContext) -> Result<(), SerializationError> {
+        HookedPacket::record(ctx, "before_deserialize")
+    }
+
+    fn after_deserialize(_packet: &Self, ctx: &SerdeContext) -> Result<(), SerializationError> {
+        HookedPacket::record(ctx, "after_deserialize")
+    }
+}
+
+#[test]
+fn after_hooks_do_not_run_when_wire_operations_fail() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let ctx = SerdeContext::default();
+    ctx.set(HookLog(events.clone()));
+
+    HookedSerializationFailure(FailingElement)
+        .write_to(&mut BytesMut::new(), &ctx)
+        .expect_err("field serialization should fail");
+    assert_eq!(events.lock().unwrap().as_slice(), &["before_serialize"]);
+
+    events.lock().unwrap().clear();
+    HookedDeserializationFailure::read_from(&mut Cursor::new([1]), &ctx)
+        .expect_err("truncated u16 should fail");
+    assert_eq!(events.lock().unwrap().as_slice(), &["before_deserialize"]);
+}

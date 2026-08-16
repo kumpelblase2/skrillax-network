@@ -141,9 +141,18 @@ pub(crate) enum DataModel<'a> {
     Enum(EnumModel<'a>),
 }
 
+#[derive(Default)]
+pub(crate) struct Hooks {
+    pub(crate) before_serialize: Option<syn::ExprPath>,
+    pub(crate) after_serialize: Option<syn::ExprPath>,
+    pub(crate) before_deserialize: Option<syn::ExprPath>,
+    pub(crate) after_deserialize: Option<syn::ExprPath>,
+}
+
 pub(crate) struct WireModel<'a> {
     pub(crate) ident: &'a Ident,
     pub(crate) data: DataModel<'a>,
+    pub(crate) hooks: Hooks,
 }
 
 #[derive(FromAttributes, Default)]
@@ -162,6 +171,10 @@ pub(crate) struct FieldArgs {
 #[darling(attributes(silkroad))]
 pub(crate) struct SilkroadArgs {
     pub(crate) size: Option<usize>,
+    pub(crate) before_serialize: Option<String>,
+    pub(crate) after_serialize: Option<String>,
+    pub(crate) before_deserialize: Option<String>,
+    pub(crate) after_deserialize: Option<String>,
 }
 
 pub(crate) fn normalize(
@@ -171,6 +184,16 @@ pub(crate) fn normalize(
     let args = SilkroadArgs::from_derive_input(input)
         .map_err(|_| input.span().error("Failed to parse silkroad arguments."))?;
     let ident = &input.ident;
+    let hooks = Hooks {
+        before_serialize: parse_hook(args.before_serialize, ident.span(), "before_serialize")?,
+        after_serialize: parse_hook(args.after_serialize, ident.span(), "after_serialize")?,
+        before_deserialize: parse_hook(
+            args.before_deserialize,
+            ident.span(),
+            "before_deserialize",
+        )?,
+        after_deserialize: parse_hook(args.after_deserialize, ident.span(), "after_deserialize")?,
+    };
 
     let data = match &input.data {
         Data::Struct(data) => {
@@ -193,7 +216,23 @@ pub(crate) fn normalize(
         },
     };
 
-    Ok(WireModel { ident, data })
+    Ok(WireModel { ident, data, hooks })
+}
+
+fn parse_hook(
+    value: Option<String>,
+    span: Span,
+    attribute: &'static str,
+) -> Result<Option<syn::ExprPath>, Diagnostic> {
+    value
+        .map(|value| {
+            syn::parse_str(&value).map_err(|_| {
+                span.error(format!(
+                    "`{attribute}` must contain a valid Rust function path."
+                ))
+            })
+        })
+        .transpose()
 }
 
 fn normalize_enum(

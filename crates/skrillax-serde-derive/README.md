@@ -58,6 +58,10 @@ for configuration.
   relevant wire trait.
 - Enum discriminants support widths `1`, `2`, `4`, and `8`; `size = 0` selects
   variants from context without writing a discriminant.
+- Container hooks `before_serialize`, `after_serialize`, `before_deserialize`,
+  and `after_deserialize` can inspect or update `SerdeContext`. After hooks run
+  only when the wire operation succeeds. Hook failures are propagated as
+  `SerializationError`; `ByteSize` does not run hooks.
 
 Invalid widths, conflicting attributes, ambiguous nesting, and unsupported
 shapes fail during derive expansion rather than silently choosing a format.

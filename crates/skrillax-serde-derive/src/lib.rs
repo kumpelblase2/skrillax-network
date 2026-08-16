@@ -40,6 +40,29 @@
 //! `From<T> for bytes::Bytes`. Call `write_to` directly when a non-default
 //! context is needed.
 //!
+//! ## Lifecycle hooks
+//!
+//! Container-level hooks can observe a value and update its `SerdeContext`
+//! immediately before or after serialization and deserialization:
+//!
+//! ```ignore
+//! #[derive(Serialize, Deserialize, ByteSize)]
+//! #[silkroad(
+//!     before_serialize = "Packet::before_serialize",
+//!     after_serialize = "Packet::after_serialize",
+//!     before_deserialize = "Packet::before_deserialize",
+//!     after_deserialize = "Packet::after_deserialize",
+//! )]
+//! struct Packet(u8);
+//! ```
+//!
+//! Serialize hooks receive `(&Packet, &SerdeContext)`, the before-deserialize
+//! hook receives `(&SerdeContext)`, and the after-deserialize hook receives
+//! `(&Packet, &SerdeContext)`. Each hook returns
+//! `Result<(), SerializationError>`. After hooks run only when the wire
+//! operation succeeds. Hooks also run when the type is nested in another
+//! derived value; `ByteSize` never invokes them.
+//!
 //! ## Strings
 //!
 //! A `String` has a little-endian `u16` length prefix. With no `size` or with
@@ -234,6 +257,16 @@ fn expand_serialize(input: TokenStream2) -> Result<TokenStream2, Diagnostic> {
     let model = normalize(&input, DeriveOperation::Serialize)?;
     let ident = model.ident;
     let output = serialize(&model)?;
+    let before = model.hooks.before_serialize.as_ref().map(|hook| {
+        quote! {
+            #hook(self, ctx)?;
+        }
+    });
+    let after = model.hooks.after_serialize.as_ref().map(|hook| {
+        quote! {
+            #hook(self, ctx)?;
+        }
+    });
 
     Ok(quote! {
         impl skrillax_serde::Serialize for #ident {
@@ -242,7 +275,9 @@ fn expand_serialize(input: TokenStream2) -> Result<TokenStream2, Diagnostic> {
                 writer: &mut ::skrillax_serde::__internal::bytes::BytesMut,
                 ctx: &skrillax_serde::SerdeContext,
             ) -> Result<(), skrillax_serde::SerializationError> {
+                #before
                 #output
+                #after
                 Ok(())
             }
         }
@@ -271,11 +306,27 @@ fn expand_deserialize(input: TokenStream2) -> Result<TokenStream2, Diagnostic> {
     let model = normalize(&input, DeriveOperation::Deserialize)?;
     let ident = model.ident;
     let output = deserialize(&model)?;
+    let before = model.hooks.before_deserialize.as_ref().map(|hook| {
+        quote! {
+            #hook(ctx)?;
+        }
+    });
+    let body = match model.hooks.after_deserialize.as_ref() {
+        Some(hook) => quote! {
+            let skrillax_serde_packet = (|| -> Result<Self, skrillax_serde::SerializationError> {
+                #output
+            })()?;
+            #hook(&skrillax_serde_packet, ctx)?;
+            Ok(skrillax_serde_packet)
+        },
+        None => output,
+    };
 
     Ok(quote! {
         impl skrillax_serde::Deserialize for #ident {
             fn read_from<T: std::io::Read + ::skrillax_serde::__internal::byteorder::ReadBytesExt>(mut reader: &mut T, ctx: &skrillax_serde::SerdeContext) -> Result<Self, skrillax_serde::SerializationError> {
-                #output
+                #before
+                #body
             }
         }
 
