@@ -113,7 +113,7 @@ struct HandshakeInitialization {
 
 #[derive(Packet, ByteSize, Serialize, Deserialize, Default, Copy, Clone, Debug)]
 #[packet(opcode = 0x5000)]
-struct SecurityCapabilityCheck {
+pub struct SecurityCapabilityCheck {
     flag: HandshakeContent,
     #[silkroad(when = "flag.contains(HandshakeContent::INIT_BLOWFISH)")]
     blowfish_seed: Option<u64>,
@@ -152,14 +152,14 @@ impl SecurityCapabilityCheck {
 
 #[derive(Packet, ByteSize, Serialize, Deserialize, Debug)]
 #[packet(opcode = 0x5000)]
-struct HandshakeChallenge {
+pub struct HandshakeChallenge {
     pub b: u32,
     pub key: u64,
 }
 
 #[derive(Packet, ByteSize, Serialize, Deserialize, Debug)]
 #[packet(opcode = 0x9000)]
-struct HandshakeAccepted;
+pub struct HandshakeAccepted;
 
 fn initial_handshake_flag(encryption: bool, checks: bool) -> HandshakeContent {
     match (encryption, checks) {
