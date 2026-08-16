@@ -37,6 +37,9 @@ deny = [
     { crate = "openssl", use-instead = "rustls" },
     { crate = "openssl-sys", use-instead = "rustls" },
 ]
+skip = [
+    "syn",
+]
 
 [sources]
 unknown-registry = "deny"
