@@ -33,10 +33,10 @@
 //! [ActiveHandshake], or [PassiveHandshake] if you're assumed to be the active
 //! party or passive party respectively.
 
-use crate::{BlowfishBlock, SilkroadEncryption, SilkroadSecurityError, blowfish_from_int};
+use crate::{SilkroadEncryption, SilkroadSecurityError, blowfish_from_int};
 use bitflags::bitflags;
 use blowfish::BlowfishLE;
-use blowfish::cipher::{BlockDecrypt, BlockEncrypt};
+use blowfish::cipher::{BlockCipherDecrypt, BlockCipherEncrypt};
 use byteorder::{ByteOrder, LittleEndian};
 use rand::random;
 use std::num::NonZeroU32;
@@ -277,7 +277,7 @@ impl ActiveHandshake {
         let blowfish = blowfish_from_int(new_key);
 
         let mut key_bytes: [u8; 8] = client_key.to_le_bytes();
-        blowfish.decrypt_block(BlowfishBlock::from_mut_slice(&mut key_bytes));
+        blowfish.decrypt_block((&mut key_bytes).into());
 
         let client_key = LittleEndian::read_u64(&key_bytes);
         let new_key = to_u64(value_b, encryption_setup.value_a);
@@ -300,7 +300,7 @@ impl ActiveHandshake {
             LOBYTE(LOWORD(encryption_setup.value_a)) & 0x07,
         );
         let mut key_bytes: [u8; 8] = challenge_key.to_le_bytes();
-        blowfish.encrypt_block(BlowfishBlock::from_mut_slice(&mut key_bytes));
+        blowfish.encrypt_block((&mut key_bytes).into());
         let encrypted_challenge = LittleEndian::read_u64(&key_bytes);
 
         let handshake_seed = transform_key(encryption_setup.handshake_seed, value_k, 3);
@@ -434,7 +434,7 @@ impl PassiveHandshake {
                 LOBYTE(LOWORD(remote_public)) & 0x07,
             );
             let mut challenge_bytes: [u8; 8] = challenge.to_le_bytes();
-            blowfish.encrypt_block(BlowfishBlock::from_mut_slice(&mut challenge_bytes));
+            blowfish.encrypt_block((&mut challenge_bytes).into());
             let encrypted_challenge = u64::from_le_bytes(challenge_bytes);
             (
                 Some(PassiveEncryptionData {
@@ -482,7 +482,7 @@ impl PassiveHandshake {
         let mut expected_key_bytes: [u8; 8] = expected_key.to_le_bytes();
         encryption_data
             .blowfish
-            .encrypt_block(BlowfishBlock::from_mut_slice(&mut expected_key_bytes));
+            .encrypt_block((&mut expected_key_bytes).into());
         let encrypted_key = u64::from_le_bytes(expected_key_bytes);
         if encrypted_key != challenge {
             return Err(SilkroadSecurityError::KeyExchangeMismatch {

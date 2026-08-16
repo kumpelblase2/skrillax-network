@@ -32,7 +32,7 @@ pub use crate::handshake::ActiveHandshake;
 pub use crate::handshake::PassiveHandshake;
 pub use crate::handshake::SecurityFeature;
 use blowfish::BlowfishLE;
-use blowfish::cipher::{Block, BlockDecrypt, BlockEncrypt, KeyInit};
+use blowfish::cipher::{Block, BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 
 use bytes::{BufMut, Bytes};
 use thiserror::Error;
@@ -128,7 +128,9 @@ impl SilkroadEncryption {
         }
 
         for chunk in data.chunks_mut(BLOWFISH_BLOCK_SIZE) {
-            let block = BlowfishBlock::from_mut_slice(chunk);
+            let block: &mut BlowfishBlock = chunk
+                .try_into()
+                .expect("validated chunks always have the Blowfish block size");
             self.blowfish.decrypt_block(block);
         }
         Ok(())
@@ -166,7 +168,9 @@ impl SilkroadEncryption {
         }
 
         for chunk in data.chunks_mut(BLOWFISH_BLOCK_SIZE) {
-            let block = BlowfishBlock::from_mut_slice(chunk);
+            let block: &mut BlowfishBlock = chunk
+                .try_into()
+                .expect("validated chunks always have the Blowfish block size");
             self.blowfish.encrypt_block(block);
         }
         Ok(())
