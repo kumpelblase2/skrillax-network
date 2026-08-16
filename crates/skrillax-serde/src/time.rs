@@ -223,6 +223,10 @@ impl PackedSilkroadTime {
             })?;
         Ok(Self(time))
     }
+
+    pub fn zero() -> Self {
+        Self::from_u32(0).expect("Should allow zeroed time.")
+    }
 }
 
 /// Fallibly converts a date into packed time without losing precision.
