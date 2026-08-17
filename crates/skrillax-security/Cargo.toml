@@ -1,6 +1,6 @@
 [package]
 name = "skrillax-security"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["kumpelblase2"]
 description = "Security implementation for Silkroad Online packet streams."
 license = "MIT"
