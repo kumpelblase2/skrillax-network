@@ -13,7 +13,7 @@ edition.workspace = true
 independent = true
 
 [dependencies]
-skrillax-security = { path = "../skrillax-security", version = "0.1.0" }
+skrillax-security = { path = "../skrillax-security", version = "0.2.0" }
 byteorder.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
@@ -26,7 +26,7 @@ skrillax-packet = { path = "../skrillax-packet", features = [
     "serde",
     "derive",
 ], version = "0.4.0" }
-skrillax-codec = { path = "../skrillax-codec", version = "0.1.1" }
+skrillax-codec = { path = "../skrillax-codec", version = "0.1.2" }
 futures = "0.3"
 bitflags = "2"
 
