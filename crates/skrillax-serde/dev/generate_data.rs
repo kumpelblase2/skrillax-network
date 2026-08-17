@@ -1,5 +1,6 @@
 use bytes::BytesMut;
 use rand::Rng;
+use rand::RngExt;
 use skrillax_serde::{ByteSize, Deserialize, SerdeContext, Serialize};
 use std::fs::File;
 use std::io::Write;
