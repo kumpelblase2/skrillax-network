@@ -5,6 +5,10 @@ repo_url = "https://github.com/kumpelblase2/skrillax-network"
 pr_branch_prefix = "release-plz-"
 git_tag_name = "{{ package }}-v{{ version }}"
 
+# We don't want to release _all_ crates, so we default to not releasing and just
+# turn on those which we _do_ want to release.
+release = false
+
 [changelog]
 header = """
 # Changelog
@@ -17,10 +21,6 @@ body = """
 - {{ commit.message }}
 {% endfor %}
 """
-
-# We don't want to release _all_ crates, so we default to not releasing and just
-# turn on those which we _do_ want to release.
-release = false
 
 [[package]]
 name = "skrillax-codec"
