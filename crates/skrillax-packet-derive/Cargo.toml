@@ -12,7 +12,7 @@ edition.workspace = true
 independent = true
 
 [dependencies]
-darling = "0.23"
+darling = "0.24"
 proc-macro2-diagnostics = "0.10"
 proc-macro2 = "1"
 quote = "1"
